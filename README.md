@@ -11,6 +11,7 @@ A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.c
 - Select a local whisper.cpp **ggml `.bin` model**, or explicitly download multilingual Tiny, Base, or Small models. Downloads show progress, support cancellation, and verify pinned SHA-256 checksums before selecting the model.
 - Automatic language detection or a manual Whisper language code (`en`, `it`, `fr`, etc.). Transcription preserves the spoken language; translation is disabled.
 - GPU-enabled builds for Vulkan, CUDA, or Metal, with a runtime switch to CPU mode.
+- A three-dot header menu with **Settings**, **Keyboard Shortcuts**, and **About Speech2Text**. Settings has a **Speech to Text** page for model/audio options and an empty **LLM** page reserved for future integration.
 - A second view with an editable example prompt, read-only original/result panes, and a **demo Rewrite action that copies the original unchanged**. Results can be copied or exported as TXT/Markdown. No LLM is contacted.
 - Replace/append confirmation, cancellation that keeps completed segments, unexported-text warnings, and saved non-sensitive preferences.
 
@@ -36,7 +37,7 @@ cargo run
 
 On Arch Linux the corresponding packages include `base-devel`, `cmake`, `clang`, `pkgconf`, `gtk4`, `libadwaita`, and `alsa-lib`.
 
-**Select/download a model first**, then open an audio file or start recording. Base is a useful starting point; Tiny is faster for live transcription. The Hugging Face download confirmation states the approximate size and destination. No model is bundled with the source.
+Open **⋮ → Settings → Speech to Text** and **select/download a model first**, then open an audio file or start recording. Settings are saved when its window closes. Base is a useful starting point; Tiny is faster for live transcription. The Hugging Face download confirmation states the approximate size and destination. No model is bundled with the source.
 
 Use a release build for meaningful performance measurements:
 
@@ -88,7 +89,9 @@ src/
     engine.rs            Whisper context/state and per-window recognition
     worker.rs            Job lifecycle, file chunks, live provisional/final events
   ui/
-    views.rs             GTK/libadwaita widget construction
+    views.rs             Transcription and rewrite view widgets
+    preferences.rs       Speech-to-text and empty LLM settings pages
+    menu.rs              Header menu, shared shortcuts, application information
     dialogs.rs           Confirmation, file selection, asynchronous export
     mod.rs               Controller: state, event polling, navigation, actions
 ```
@@ -119,7 +122,7 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 
 ### Validation performed in this environment
 
-- `cargo test`: **7 tests passed**.
+- `cargo test`: **8 tests passed**, including a GTK settings/menu surface test (skipped when no display is available).
 - `cargo clippy --all-targets -- -D warnings`: passed.
 - GTK desktop launch smoke test: no GTK errors; ALSA device enumeration emitted host-specific warnings.
 - Tiny model downloaded and verified through the actual application downloader.

@@ -1,7 +1,7 @@
 use adw::prelude::*;
 use std::path::PathBuf;
 
-pub fn message(window: &adw::ApplicationWindow, heading: &str, body: &str) {
+pub fn message(window: &impl IsA<gtk::Window>, heading: &str, body: &str) {
     let dialog = adw::MessageDialog::new(Some(window), Some(heading), Some(body));
     dialog.add_response("close", "Close");
     dialog.set_close_response("close");
@@ -9,7 +9,7 @@ pub fn message(window: &adw::ApplicationWindow, heading: &str, body: &str) {
 }
 
 pub fn confirm(
-    window: &adw::ApplicationWindow,
+    window: &impl IsA<gtk::Window>,
     heading: &str,
     body: &str,
     responses: &[(&str, &str)],
@@ -24,7 +24,7 @@ pub fn confirm(
     dialog.present();
 }
 
-pub fn open(window: &adw::ApplicationWindow, model: bool, action: impl Fn(PathBuf) + 'static) {
+pub fn open(window: &impl IsA<gtk::Window>, model: bool, action: impl Fn(PathBuf) + 'static) {
     let filter = gtk::FileFilter::new();
     if model {
         filter.set_name(Some("Whisper ggml models"));
@@ -51,7 +51,7 @@ pub fn open(window: &adw::ApplicationWindow, model: bool, action: impl Fn(PathBu
         .filters(&filters)
         .default_filter(&filter)
         .build();
-    let parent = window.clone();
+    let parent = window.as_ref().clone();
     dialog.open(
         Some(window),
         None::<&gtk::gio::Cancellable>,
@@ -76,7 +76,7 @@ pub fn open(window: &adw::ApplicationWindow, model: bool, action: impl Fn(PathBu
 }
 
 pub fn save(
-    window: &adw::ApplicationWindow,
+    window: &impl IsA<gtk::Window>,
     name: &str,
     content: String,
     done: impl Fn() + 'static,
@@ -85,7 +85,7 @@ pub fn save(
         .title("Export Text")
         .initial_name(name)
         .build();
-    let parent = window.clone();
+    let parent = window.as_ref().clone();
     dialog.save(
         Some(window),
         None::<&gtk::gio::Cancellable>,

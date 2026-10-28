@@ -1,7 +1,12 @@
 //! GTK stays on the main thread. Workers communicate through typed messages;
 //! no widget is ever sent to an audio, network, or inference thread.
 mod dialogs;
+mod menu;
+mod preferences;
 mod views;
+
+#[cfg(test)]
+mod tests;
 
 use crate::{
     model,
@@ -41,6 +46,7 @@ struct App {
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
     main: MainView,
+    preferences: preferences::Preferences,
     rewrite: RewriteView,
     settings: RefCell<Settings>,
     transcript: RefCell<Transcript>,
@@ -62,7 +68,7 @@ pub fn build(application: &adw::Application) {
         Ok(settings) => (settings, None),
         Err(error) => (Settings::default(), Some(format!("{error:#}"))),
     };
-    let main = MainView::new(&settings);
+    let main = MainView::new();
     let rewrite = RewriteView::new();
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::SlideLeftRight)
@@ -75,6 +81,7 @@ pub fn build(application: &adw::Application) {
         "Speech2Text",
         "Private, on-device transcription",
     )));
+    header.pack_end(&menu::button());
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&stack));
     let window = adw::ApplicationWindow::builder()
@@ -86,10 +93,16 @@ pub fn build(application: &adw::Application) {
         .height_request(600)
         .content(&toolbar)
         .build();
+    let preferences = preferences::Preferences::new(&window, &settings);
+    main.progress
+        .bind_property("fraction", &preferences.progress, "fraction")
+        .sync_create()
+        .build();
     let app = Rc::new(App {
         window,
         stack,
         main,
+        preferences,
         rewrite,
         settings: RefCell::new(settings),
         transcript: RefCell::default(),
@@ -138,9 +151,17 @@ fn on_click(button: &gtk::Button, app: &Rc<App>, action: impl Fn(Rc<App>) + 'sta
 
 impl App {
     fn connect(self: &Rc<Self>) {
-        on_click(&self.main.select_model, self, |app| {
+        self.connect_menu();
+        let weak = Rc::downgrade(self);
+        self.preferences.window.connect_close_request(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.persist_controls();
+            }
+            gtk::glib::Propagation::Proceed
+        });
+        on_click(&self.preferences.select_model, self, |app| {
             let weak = Rc::downgrade(&app);
-            dialogs::open(&app.window, true, move |path| {
+            dialogs::open(&app.preferences.window, true, move |path| {
                 if let Some(app) = weak.upgrade() {
                     app.settings.borrow_mut().model = Some(path);
                     app.persist();
@@ -149,7 +170,15 @@ impl App {
                 }
             });
         });
-        on_click(&self.main.download, self, |app| app.ask_download());
+        on_click(&self.preferences.download, self, |app| {
+            if let Some(job) = app.download.borrow().as_ref() {
+                job.cancel.store(true, Ordering::Relaxed);
+                app.preferences.download.set_sensitive(false);
+                app.main.status.set_text("Cancelling model download…");
+            } else {
+                app.ask_download();
+            }
+        });
         on_click(&self.main.open, self, |app| {
             let weak = Rc::downgrade(&app);
             dialogs::open(&app.window, false, move |path| {
@@ -254,6 +283,59 @@ impl App {
         });
     }
 
+    fn connect_menu(self: &Rc<Self>) {
+        for (name, callback) in [
+            (
+                "settings",
+                (|app: &App| app.preferences.window.present()) as fn(&App),
+            ),
+            ("shortcuts", |app: &App| menu::shortcuts(&app.window)),
+            ("about", |app: &App| menu::about(&app.window)),
+            ("close", |app: &App| app.window.close()),
+        ] {
+            let action = gtk::gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(self);
+            action.connect_activate(move |_, _| {
+                if let Some(app) = weak.upgrade() {
+                    callback(&app);
+                }
+            });
+            self.window.add_action(&action);
+        }
+        for (name, button) in [
+            ("open", &self.main.open),
+            ("record", &self.main.record),
+            ("stop", &self.main.stop),
+            ("save", &self.main.txt),
+        ] {
+            let action = gtk::gio::SimpleAction::new(name, None);
+            button
+                .bind_property("sensitive", &action, "enabled")
+                .sync_create()
+                .build();
+            let weak = button.downgrade();
+            action.connect_activate(move |_, _| {
+                if let Some(button) = weak.upgrade() {
+                    button.emit_clicked();
+                }
+            });
+            self.window.add_action(&action);
+        }
+        if let Some(application) = self.window.application() {
+            for (action, _, accelerator) in menu::SHORTCUTS {
+                application.set_accels_for_action(action, &[*accelerator]);
+            }
+        }
+    }
+
+    fn dialog_parent(&self) -> gtk::Window {
+        if self.preferences.window.is_visible() {
+            self.preferences.window.clone().upcast()
+        } else {
+            self.window.clone().upcast()
+        }
+    }
+
     fn busy(&self) -> bool {
         self.job.borrow().is_some() || self.download.borrow().is_some()
     }
@@ -269,19 +351,19 @@ impl App {
     fn persist_controls(&self) {
         {
             let mut settings = self.settings.borrow_mut();
-            let language = self.main.language.text().trim().to_lowercase();
+            let language = self.preferences.language.text().trim().to_lowercase();
             settings.language = if language.is_empty() || language == "auto" {
                 None
             } else {
                 Some(language)
             };
-            settings.use_gpu = self.main.gpu.is_active();
+            settings.use_gpu = self.preferences.gpu.is_active();
             settings.device = self
-                .main
+                .preferences
                 .device
                 .selected()
                 .checked_sub(1)
-                .and_then(|index| self.main.devices.get(index as usize).cloned());
+                .and_then(|index| self.preferences.devices.get(index as usize).cloned());
         }
         self.persist();
     }
@@ -294,8 +376,8 @@ impl App {
             .and_then(|p| p.file_name())
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "No model selected".into());
-        self.main.model_label.set_text(&text);
-        self.main.model_label.set_tooltip_text(
+        self.preferences.model_label.set_text(&text);
+        self.preferences.model_label.set_tooltip_text(
             settings
                 .model
                 .as_ref()
@@ -313,15 +395,23 @@ impl App {
             .as_ref()
             .is_some_and(|p| p.is_file());
         let has_text = !self.transcript.borrow().segments.is_empty();
-        for widget in [&self.main.select_model, &self.main.download] {
-            widget.set_sensitive(!busy);
-        }
-        self.main.catalog.set_sensitive(!busy);
-        self.main
+        let downloading = self.download.borrow().is_some();
+        self.preferences.select_model.set_sensitive(!busy);
+        self.preferences
+            .download
+            .set_sensitive(!busy || downloading);
+        self.preferences.download.set_label(if downloading {
+            "Cancel Download"
+        } else {
+            "Download"
+        });
+        self.preferences.progress.set_visible(downloading);
+        self.preferences.catalog.set_sensitive(!busy);
+        self.preferences
             .gpu
             .set_sensitive(!busy && transcription::gpu_available_in_build());
-        self.main.language.set_sensitive(!busy);
-        self.main.device.set_sensitive(!busy);
+        self.preferences.language.set_sensitive(!busy);
+        self.preferences.device.set_sensitive(!busy);
         self.main.open.set_sensitive(!busy && has_model);
         self.main.record.set_sensitive(!busy && has_model);
         self.main.stop.set_sensitive(self.recording.get());
@@ -468,13 +558,13 @@ impl App {
     }
 
     fn ask_download(self: &Rc<Self>) {
-        let index = self.main.catalog.selected() as usize;
+        let index = self.preferences.catalog.selected() as usize;
         let Some(model) = model::CATALOG.get(index) else {
             return;
         };
         let weak = Rc::downgrade(self);
         dialogs::confirm(
-            &self.window,
+            &self.preferences.window,
             "Download Whisper model?",
             &format!(
                 "{} will be downloaded from huggingface.co to the application's data directory. No audio or transcript is uploaded. The file's SHA-256 checksum will be verified.",
@@ -498,7 +588,11 @@ impl App {
         let directory = match settings::model_dir() {
             Ok(path) => path,
             Err(error) => {
-                dialogs::message(&self.window, "Cannot download model", &error.to_string());
+                dialogs::message(
+                    &self.dialog_parent(),
+                    "Cannot download model",
+                    &error.to_string(),
+                );
                 return;
             }
         };
@@ -609,7 +703,7 @@ impl App {
                         }
                         Err(error) => {
                             self.main.status.set_text("Model download failed.");
-                            dialogs::message(&self.window, "Download failed", &error);
+                            dialogs::message(&self.dialog_parent(), "Download failed", &error);
                         }
                     }
                     self.refresh();
