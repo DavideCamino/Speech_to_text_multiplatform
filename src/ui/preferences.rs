@@ -76,13 +76,15 @@ impl Preferences {
             .sensitive(crate::transcription::gpu_available_in_build())
             .valign(Align::Center)
             .build();
+        let backends = crate::transcription::gpu_backends_in_build();
+        let gpu_subtitle = if backends.is_empty() {
+            "CPU build — rebuild with vulkan, cuda, metal, or rocm to enable".to_owned()
+        } else {
+            format!("Compiled GPU backends: {}", backends.join(", "))
+        };
         let gpu_row = adw::ActionRow::builder()
             .title("Hardware acceleration")
-            .subtitle(if crate::transcription::gpu_available_in_build() {
-                "Use the GPU backend enabled in this build"
-            } else {
-                "CPU build — rebuild with vulkan, cuda, or metal to enable"
-            })
+            .subtitle(&gpu_subtitle)
             .build();
         gpu_row.add_suffix(&gpu);
         config.add(&gpu_row);

@@ -11,6 +11,7 @@ default = []
 vulkan = ["whisper-rs/vulkan"]
 cuda = ["whisper-rs/cuda"]
 metal = ["whisper-rs/metal"]
+rocm = ["whisper-rs/hipblas"]
 
 [dependencies]
 anyhow = "1"

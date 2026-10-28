@@ -10,7 +10,7 @@ A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.c
 - Read-only transcript, clipboard copy, UTF-8 TXT, and segment-timed SRT export.
 - Select a local whisper.cpp **ggml `.bin` model**, or explicitly download multilingual Tiny, Base, or Small models. Downloads show progress, support cancellation, and verify pinned SHA-256 checksums before selecting the model.
 - Automatic language detection or a manual Whisper language code (`en`, `it`, `fr`, etc.). Transcription preserves the spoken language; translation is disabled.
-- GPU-enabled builds for Vulkan, CUDA, or Metal, with a runtime switch to CPU mode.
+- GPU-enabled builds for Vulkan, CUDA, Metal, or **AMD ROCm (HIP/hipBLAS)**, with a runtime switch to CPU mode.
 - A three-dot header menu with **Settings**, **Keyboard Shortcuts**, and **About Speech2Text**. Settings has a **Speech to Text** page for model/audio options and an empty **LLM** page reserved for future integration.
 - A second view with an editable example prompt, read-only original/result panes, and a **demo Rewrite action that copies the original unchanged**. Results can be copied or exported as TXT/Markdown. No LLM is contacted.
 - Replace/append confirmation, cancellation that keeps completed segments, unexported-text warnings, and saved non-sensitive preferences.
@@ -54,8 +54,32 @@ GPU support is implemented as explicit Cargo features, because each backend need
 | Vulkan (Linux/Windows) | `cargo run --release --features vulkan` | Vulkan headers, loader, shader compiler (`glslc`), compatible GPU drivers; Windows generally needs the Vulkan SDK |
 | CUDA (NVIDIA) | `cargo run --release --features cuda` | Compatible NVIDIA GPU/driver and CUDA toolkit including `nvcc` |
 | Metal (macOS) | `cargo run --release --features metal` | Xcode command-line tools and supported Apple hardware |
+| ROCm (AMD, Linux) | `cargo run --release --features rocm` | ROCm-compatible AMD GPU/driver, HIP SDK (`hipcc`), hipBLAS and rocBLAS development libraries |
 
 For example, Ubuntu Vulkan development packages include `libvulkan-dev` and `glslc`; Arch uses `vulkan-headers`, `vulkan-icd-loader`, and `shaderc`, plus the appropriate vendor driver.
+
+#### AMD ROCm setup
+
+The `rocm` feature enables `whisper-rs/hipblas`, which compiles whisper.cpp's HIP backend. It is a separate build option from Vulkan, not an additional driver needed by Vulkan. Settings identifies it as **AMD ROCm (HIP/hipBLAS)**.
+
+Install the ROCm HIP SDK, hipBLAS, and rocBLAS for your distribution and GPU. If installed in `/opt/rocm`, make the toolchain discoverable with:
+
+```sh
+export HIP_PATH=/opt/rocm
+export PATH="$HIP_PATH/bin:$PATH"
+export CMAKE_PREFIX_PATH="$HIP_PATH${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+cargo run --release --features rocm
+```
+
+Use `rocminfo` to check whether the runtime can see your GPU and identify its `gfx...` architecture. If automatic architecture detection fails, set `AMDGPU_TARGETS` to your GPU's actual target. For example, **only for a `gfx1103` GPU**:
+
+```sh
+AMDGPU_TARGETS=gfx1103 cargo run --release --features rocm
+```
+
+The selected architecture must also be supported by the installed ROCm/rocBLAS libraries; merely being listed by `rocminfo` does not guarantee compatibility. Do not use an arbitrary architecture override to bypass that requirement. First builds compile native GPU kernels and can take several minutes. For a custom ROCm installation, the runtime loader may also need its `lib` directory in `LD_LIBRARY_PATH`.
+
+**ROCm support is Linux-only with the current bindings.** The pinned `whisper-rs-sys` version explicitly rejects HIP builds on Windows; use Vulkan there. ROCm is not available on macOS.
 
 In a GPU-enabled build the app requests GPU inference by default. Disable **Hardware acceleration** to force CPU mode. Native backend initialization determines device availability and may fall back to CPU; this demo does **not** claim to report the actual device selected. If model initialization fails, the error explains that CPU mode can be tried. There is not yet a GPU-device picker.
 
@@ -118,16 +142,19 @@ cargo run --release --features vulkan --example transcribe -- \
 
 The transcription example prints plain text to stdout and SRT to stderr. The normal app does not print transcripts.
 
-Automated tests cover SRT formatting/Unicode, segment normalization, resampling across packet boundaries, incremental stereo WAV decoding, invalid input, worker model errors, and pre-cancelled downloads. They do not require a model, network access, display, or microphone, but native build dependencies are still required.
+Automated tests cover SRT formatting/Unicode, segment normalization, resampling across packet boundaries, incremental stereo WAV decoding, invalid input, worker model errors, pre-cancelled downloads, compiled GPU feature detection, and GTK settings/menu surfaces. They do not require a model, network access, display, or microphone, but native build dependencies are still required.
 
 ### Validation performed in this environment
 
-- `cargo test`: **8 tests passed**, including a GTK settings/menu surface test (skipped when no display is available).
+- `cargo test --locked`: **9 tests passed**, including compiled GPU feature detection and a GTK settings/menu surface test (the GTK test is skipped when no display is available).
+- `AMDGPU_TARGETS=gfx1103 cargo check --locked --features rocm`: passed with the installed ROCm toolkit.
+- `AMDGPU_TARGETS=gfx1103 cargo test --locked --features rocm`: **9 tests passed**.
+- A ROCm-enabled transcription smoke test with Tiny and `--gpu` succeeded on generated speech and produced text/SRT. The app requests GPU use but does not report the actual device selected.
 - `cargo clippy --all-targets -- -D warnings`: passed.
 - GTK desktop launch smoke test: no GTK errors; ALSA device enumeration emitted host-specific warnings.
 - Tiny model downloaded and verified through the actual application downloader.
 - Actual CPU transcription and SRT generation succeeded on generated speech in **all five requested audio formats**. FFmpeg/espeak were used only to generate test inputs, not by the application.
-- Vulkan build attempted: blocked by missing **Vulkan development headers** on this host. GPU runtime behavior is not yet verified.
+- Vulkan initially required missing development headers; the user subsequently reported that Vulkan works. No automated Vulkan runtime check has been performed.
 - Live microphone correctness/latency, exhaustive UI interaction, and Windows/macOS builds are not yet verified.
 
 ## Demo limitations / follow-up work
