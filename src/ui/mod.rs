@@ -358,6 +358,16 @@ impl App {
                 Some(language)
             };
             settings.use_gpu = self.preferences.gpu.is_active();
+            settings.gpu_backend = self
+                .preferences
+                .gpu_backend
+                .selected()
+                .checked_sub(1)
+                .and_then(|index| {
+                    transcription::compiled_gpu_backends()
+                        .get(index as usize)
+                        .copied()
+                });
             settings.device = self
                 .preferences
                 .device

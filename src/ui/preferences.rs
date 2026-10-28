@@ -11,6 +11,7 @@ pub struct Preferences {
     pub download: gtk::Button,
     pub progress: gtk::ProgressBar,
     pub gpu: gtk::Switch,
+    pub gpu_backend: gtk::DropDown,
     pub language: gtk::Entry,
     pub device: gtk::DropDown,
     pub devices: Vec<String>,
@@ -88,6 +89,44 @@ impl Preferences {
             .build();
         gpu_row.add_suffix(&gpu);
         config.add(&gpu_row);
+        let compiled = crate::transcription::compiled_gpu_backends();
+        let mut backend_names = vec!["Automatic (Whisper default)"];
+        backend_names.extend(compiled.iter().map(|backend| backend.label()));
+        let gpu_backend = gtk::DropDown::from_strings(&backend_names);
+        gpu_backend.set_valign(Align::Center);
+        let selected = settings
+            .gpu_backend
+            .and_then(|saved| compiled.iter().position(|backend| *backend == saved));
+        gpu_backend.set_selected(selected.map_or(0, |index| index as u32 + 1));
+        let backend_row = adw::ActionRow::builder()
+            .title("GPU backend")
+            .subtitle(if settings.gpu_backend.is_some() && selected.is_none() {
+                "Saved backend is not in this build; Automatic is selected"
+            } else {
+                "Compiled backends; device availability is checked when transcription starts"
+            })
+            .sensitive(gpu.is_active() && gpu.is_sensitive())
+            .build();
+        backend_row.add_suffix(&gpu_backend);
+        config.add(&backend_row);
+        let row = backend_row.downgrade();
+        gpu_backend.connect_selected_notify(move |_| {
+            if let Some(row) = row.upgrade() {
+                row.set_subtitle(
+                    "Compiled backends; device availability is checked when transcription starts",
+                );
+            }
+        });
+        // Follow both the toggle and its busy/CPU-build sensitivity. Weak widget
+        // references avoid cycles; changing this control never loads a GPU driver.
+        for property in ["active", "sensitive"] {
+            let row = backend_row.downgrade();
+            gpu.connect_notify_local(Some(property), move |gpu, _| {
+                if let Some(row) = row.upgrade() {
+                    row.set_sensitive(gpu.is_active() && gpu.is_sensitive());
+                }
+            });
+        }
         let language = gtk::Entry::builder()
             .placeholder_text("auto, en, it, fr…")
             .text(settings.language.as_deref().unwrap_or("auto"))
@@ -131,6 +170,7 @@ impl Preferences {
             download,
             progress,
             gpu,
+            gpu_backend,
             language,
             device,
             devices,

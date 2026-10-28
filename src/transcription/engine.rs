@@ -20,6 +20,12 @@ impl Engine {
             .context("Select or download a Whisper model first")?;
         let mut options = WhisperContextParameters::default();
         options.use_gpu(settings.use_gpu && super::gpu_available_in_build());
+        let backend = if settings.use_gpu {
+            settings.gpu_backend
+        } else {
+            None
+        };
+        options.gpu_device(super::gpu::gpu_device_index(backend)?);
         let context = WhisperContext::new_with_params(path, options)
             .context("Cannot load model. Check its format, available memory, and GPU drivers; try CPU mode if necessary")?;
         Ok(Self {

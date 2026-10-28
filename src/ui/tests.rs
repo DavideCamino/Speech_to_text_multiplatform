@@ -8,7 +8,26 @@ fn settings_pages_and_menu_surfaces_build() {
     }
     adw::init().expect("libadwaita initialization");
     let parent = adw::ApplicationWindow::builder().build();
-    let preferences = preferences::Preferences::new(&parent, &Settings::default());
+    let compiled = transcription::compiled_gpu_backends();
+    let settings = Settings {
+        gpu_backend: compiled.last().copied(),
+        ..Settings::default()
+    };
+    let preferences = preferences::Preferences::new(&parent, &settings);
+    assert_eq!(
+        preferences.gpu_backend.model().unwrap().n_items(),
+        compiled.len() as u32 + 1
+    );
+    assert_eq!(preferences.gpu_backend.selected(), compiled.len() as u32);
+    // Test the toggle and busy-state sensitivity without initializing a driver.
+    preferences.gpu.set_sensitive(true);
+    preferences.gpu.set_active(true);
+    assert!(preferences.gpu_backend.is_sensitive());
+    preferences.gpu.set_active(false);
+    assert!(!preferences.gpu_backend.is_sensitive());
+    preferences.gpu.set_active(true);
+    preferences.gpu.set_sensitive(false);
+    assert!(!preferences.gpu_backend.is_sensitive());
     preferences.window.set_visible_page_name("stt");
     assert_eq!(
         preferences.window.visible_page_name().as_deref(),

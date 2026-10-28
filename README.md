@@ -10,7 +10,7 @@ A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.c
 - Read-only transcript, clipboard copy, UTF-8 TXT, and segment-timed SRT export.
 - Select a local whisper.cpp **ggml `.bin` model**, or explicitly download multilingual Tiny, Base, or Small models. Downloads show progress, support cancellation, and verify pinned SHA-256 checksums before selecting the model.
 - Automatic language detection or a manual Whisper language code (`en`, `it`, `fr`, etc.). Transcription preserves the spoken language; translation is disabled.
-- GPU-enabled builds for Vulkan, CUDA, Metal, or **AMD ROCm (HIP/hipBLAS)**, with a runtime switch to CPU mode.
+- GPU-enabled builds for Vulkan, CUDA, Metal, or **AMD ROCm (HIP/hipBLAS)**, with a runtime switch to CPU mode and a saved backend selector.
 - A three-dot header menu with **Settings**, **Keyboard Shortcuts**, and **About Speech2Text**. Settings has a **Speech to Text** page for model/audio options and an empty **LLM** page reserved for future integration.
 - A second view with an editable example prompt, read-only original/result panes, and a **demo Rewrite action that copies the original unchanged**. Results can be copied or exported as TXT/Markdown. No LLM is contacted.
 - Replace/append confirmation, cancellation that keeps completed segments, unexported-text warnings, and saved non-sensitive preferences.
@@ -47,7 +47,13 @@ cargo run --release
 
 ### Hardware acceleration
 
-GPU support is implemented as explicit Cargo features, because each backend needs different native tooling. **Enable one GPU feature at a time.** A default build is CPU-only and labels the acceleration switch accordingly.
+GPU support is implemented as explicit Cargo features, because each backend needs different native tooling. A default build is CPU-only and labels the acceleration switch accordingly. Compatible backends can be compiled together (all corresponding toolkits are required); for example:
+
+```sh
+cargo run --release --features rocm,vulkan
+```
+
+In **Settings → Speech to Text**, enable **Hardware acceleration**, then select **GPU backend**. The dropdown lists the backends compiled into that build, plus **Automatic (Whisper default)**. It is disabled when acceleration is off or work is running. The choice is saved independently of the on/off switch and applies to the next transcription job.
 
 | Backend | Build/run command | Additional requirements |
 | --- | --- | --- |
@@ -81,7 +87,9 @@ The selected architecture must also be supported by the installed ROCm/rocBLAS l
 
 **ROCm support is Linux-only with the current bindings.** The pinned `whisper-rs-sys` version explicitly rejects HIP builds on Windows; use Vulkan there. ROCm is not available on macOS.
 
-In a GPU-enabled build the app requests GPU inference by default. Disable **Hardware acceleration** to force CPU mode. Native backend initialization determines device availability and may fall back to CPU; this demo does **not** claim to report the actual device selected. If model initialization fails, the error explains that CPU mode can be tried. There is not yet a GPU-device picker.
+In a GPU-enabled build the app requests GPU inference by default. Disable **Hardware acceleration** to force CPU mode. **Automatic** preserves Whisper's default device selection. An explicit backend selects its first detected GPU using Whisper's GPU-device ordinal; it does not silently select a different GPU backend. If the backend is not compiled in or no compatible device is detected, transcription reports an error. Driver discovery happens on the worker, not the GTK thread. The native engine can still fall back to CPU if GPU initialization fails internally; the app does not report the actual device used. There is no per-device picker within a backend yet.
+
+Old preferences without a backend choice default to Automatic. If a saved backend is absent from a different build, Settings explains that Automatic has been selected instead.
 
 ## Windows and macOS
 
@@ -111,6 +119,7 @@ src/
     resample.rs          Stateful windowed-sinc conversion to 16 kHz
   transcription/
     engine.rs            Whisper context/state and per-window recognition
+    gpu.rs               Stable backend IDs, GGML registry/device-index mapping
     worker.rs            Job lifecycle, file chunks, live provisional/final events
   ui/
     views.rs             Transcription and rewrite view widgets
@@ -138,23 +147,28 @@ cargo run --release --example transcribe -- ./models/ggml-tiny.bin ./audio.wav
 # GPU-enabled equivalent:
 cargo run --release --features vulkan --example transcribe -- \
   ./models/ggml-tiny.bin ./audio.m4a --gpu
+
+# Test explicit backend selection in a combined build:
+cargo run --release --features rocm,vulkan --example transcribe -- \
+  ./models/ggml-tiny.bin ./audio.wav --backend rocm
+# Replace --backend rocm with --backend vulkan to exercise the other backend.
 ```
 
 The transcription example prints plain text to stdout and SRT to stderr. The normal app does not print transcripts.
 
-Automated tests cover SRT formatting/Unicode, segment normalization, resampling across packet boundaries, incremental stereo WAV decoding, invalid input, worker model errors, pre-cancelled downloads, compiled GPU feature detection, and GTK settings/menu surfaces. They do not require a model, network access, display, or microphone, but native build dependencies are still required.
+Automated tests cover SRT formatting/Unicode, segment normalization, resampling across packet boundaries, incremental stereo WAV decoding, invalid input, worker model errors, pre-cancelled downloads, compiled GPU feature detection, backend device-index mapping, preference migration/round-tripping, and GTK settings/menu/selector behavior. They do not require a model, network access, display, or microphone, but native build dependencies are still required.
 
 ### Validation performed in this environment
 
-- `cargo test --locked`: **9 tests passed**, including compiled GPU feature detection and a GTK settings/menu surface test (the GTK test is skipped when no display is available).
+- `cargo test --locked`: **13 tests passed**, including compiled GPU feature detection and a GTK settings/menu surface test (the GTK test is skipped when no display is available).
 - `AMDGPU_TARGETS=gfx1103 cargo check --locked --features rocm`: passed with the installed ROCm toolkit.
-- `AMDGPU_TARGETS=gfx1103 cargo test --locked --features rocm`: **9 tests passed**.
-- A ROCm-enabled transcription smoke test with Tiny and `--gpu` succeeded on generated speech and produced text/SRT. The app requests GPU use but does not report the actual device selected.
+- `AMDGPU_TARGETS=gfx1103 cargo test --locked --features rocm,vulkan`: **13 tests passed** in a combined-backend build.
+- Transcription smoke tests with Tiny, generated speech, and explicit `--backend rocm` / `--backend vulkan` both succeeded in that same combined build and produced text/SRT. The app does not report the actual device used internally.
 - `cargo clippy --all-targets -- -D warnings`: passed.
 - GTK desktop launch smoke test: no GTK errors; ALSA device enumeration emitted host-specific warnings.
 - Tiny model downloaded and verified through the actual application downloader.
 - Actual CPU transcription and SRT generation succeeded on generated speech in **all five requested audio formats**. FFmpeg/espeak were used only to generate test inputs, not by the application.
-- Vulkan initially required missing development headers; the user subsequently reported that Vulkan works. No automated Vulkan runtime check has been performed.
+- Vulkan and ROCm selection were exercised on this Linux host; CUDA and Metal runtime selection have not been tested here.
 - Live microphone correctness/latency, exhaustive UI interaction, and Windows/macOS builds are not yet verified.
 
 ## Demo limitations / follow-up work

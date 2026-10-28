@@ -1,24 +1,20 @@
 //! All decoding, model loading, and inference run off the GTK main thread.
 mod engine;
+mod gpu;
 mod worker;
+pub use gpu::{GpuBackend, compiled_gpu_backends};
 pub use worker::{Event, Job, Source, start};
 
 /// Compiled backends, not a runtime probe of installed GPUs or drivers.
-pub fn gpu_backends_in_build() -> &'static [&'static str] {
-    &[
-        #[cfg(feature = "vulkan")]
-        "Vulkan",
-        #[cfg(feature = "cuda")]
-        "CUDA",
-        #[cfg(feature = "metal")]
-        "Metal",
-        #[cfg(feature = "rocm")]
-        "AMD ROCm (HIP/hipBLAS)",
-    ]
+pub fn gpu_backends_in_build() -> Vec<&'static str> {
+    compiled_gpu_backends()
+        .iter()
+        .map(|backend| backend.label())
+        .collect()
 }
 
 pub fn gpu_available_in_build() -> bool {
-    !gpu_backends_in_build().is_empty()
+    !compiled_gpu_backends().is_empty()
 }
 
 #[cfg(test)]

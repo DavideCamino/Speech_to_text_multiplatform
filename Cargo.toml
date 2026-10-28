@@ -17,7 +17,7 @@ rocm = ["whisper-rs/hipblas"]
 anyhow = "1"
 adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
-whisper-rs = "0.16"
+whisper-rs = { version = "0.16", features = ["raw-api"] }
 cpal = "0.15"
 symphonia = { version = "0.5", features = ["all"] }
 serde = { version = "1", features = ["derive"] }

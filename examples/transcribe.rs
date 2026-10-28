@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use speech2text::{
     settings::Settings,
     transcript::Transcript,
-    transcription::{self, Event, Source},
+    transcription::{self, Event, GpuBackend, Source},
 };
 
 fn main() -> Result<()> {
@@ -15,12 +15,30 @@ fn main() -> Result<()> {
     let audio = args
         .next()
         .context("Usage: transcribe MODEL AUDIO [--gpu]")?;
-    let use_gpu = args.next().is_some_and(|s| s == "--gpu");
-    let settings = Settings {
+    let mut settings = Settings {
         model: Some(model.into()),
-        use_gpu,
+        use_gpu: false,
         ..Settings::default()
     };
+    while let Some(option) = args.next() {
+        match option.to_str() {
+            Some("--gpu") => settings.use_gpu = true,
+            Some("--backend") => {
+                let name = args
+                    .next()
+                    .context("--backend requires vulkan, cuda, metal, or rocm")?;
+                settings.gpu_backend = Some(match name.to_str() {
+                    Some("vulkan") => GpuBackend::Vulkan,
+                    Some("cuda") => GpuBackend::Cuda,
+                    Some("metal") => GpuBackend::Metal,
+                    Some("rocm") => GpuBackend::Rocm,
+                    _ => bail!("Choose vulkan, cuda, metal, or rocm"),
+                });
+                settings.use_gpu = true;
+            }
+            _ => bail!("Usage: transcribe MODEL AUDIO [--gpu] [--backend vulkan|cuda|metal|rocm]"),
+        }
+    }
     let job = transcription::start(Source::File(audio.into()), settings, 0);
     let mut transcript = Transcript::default();
     loop {
