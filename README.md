@@ -235,7 +235,7 @@ You can develop on Linux and let **GitHub Actions compile on Windows**. No local
 
 ### Build and download through GitHub Actions
 
-1. Commit and push the Windows workflow/scripts. Relevant branch pushes and pull requests trigger `.github/workflows/windows.yml`; it can also be started manually from **Actions → Windows portable (CPU) → Run workflow** once present on the default branch.
+1. Commit and push the Windows workflow/scripts to the default branch, then start **Actions → Windows portable (CPU) → Run workflow**. `.github/workflows/windows.yml` is **manual-only**: ordinary pushes, pull requests, and tags do not create Windows artifacts. The normal Rust-check workflow still runs the platform-independent packaging tests automatically.
 2. The hosted `windows-2022` runner installs a coherent **MSYS2 UCRT64** stack: MSYS2's GNU Rust toolchain, GCC, Clang/libclang, CMake/Ninja, GTK4/libadwaita, and icon/SVG resources. It does not mix those libraries with the runner's MSVC Rust toolchain.
 3. It builds/tests with `Cargo.lock`, no GPU features, and baseline x86_64 CPU flags. `build-aux/windows/package.py` recursively collects imported DLLs from that same prefix and includes runtime-loaded GTK/GIO/GdkPixbuf modules, schemas, icons, fonts/configuration where present, and project/dependency license notices. Unknown DLL dependencies or MSYS-runtime dependencies fail packaging.
 4. A PowerShell smoke test extracts the actual ZIP into a new path containing spaces, strips MSYS2 out of `PATH`, and checks that the launcher opens a window. This is a startup check, **not** proof of successful transcription or microphone support.
@@ -352,7 +352,7 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - The CPU+Vulkan Flatpak was built and exported successfully under `io.github.davidecamino.Speech2Text` for version `0.1.0`. `dist/Speech2Text-x86_64.flatpak` was generated and its `SHA256SUMS` check passed.
 - A short `flatpak-builder --run` sandbox launch succeeded. This development launch emitted host accessibility-bus and ALSA device-enumeration warnings; installed-bundle file/microphone/GPU integration should still be tested before publication.
 - The new bundle has not been installed automatically, and the GitHub release workflow has not been executed. No release tag or GitHub publication was created.
-- Windows packaging: **6 platform-independent tests passed**, covering x86_64 PE parsing, recursive DLL collection, missing/MSYS dependency rejection, safe output handling, runtime layout/license collection, ZIP creation, and checksums. Actionlint and PowerShell AST syntax checks passed on Linux. The real Windows build, relocated-GUI smoke test, and device/file-transcription behavior still require a GitHub Actions run and manual Windows testing. Live microphone correctness/latency, exhaustive UI interaction, and macOS builds are not yet verified.
+- Windows packaging: **7 platform-independent tests passed**, covering mixed-separator Windows license paths, x86_64 PE parsing, recursive DLL collection, missing/MSYS dependency rejection, safe output handling, runtime layout/license collection, ZIP creation, and checksums. Actionlint and PowerShell AST syntax checks passed on Linux. The real Windows build, relocated-GUI smoke test, and device/file-transcription behavior still require a GitHub Actions run and manual Windows testing. Live microphone correctness/latency, exhaustive UI interaction, and macOS builds are not yet verified.
 
 ## Demo limitations / follow-up work
 

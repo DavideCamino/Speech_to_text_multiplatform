@@ -2,29 +2,6 @@ name: Windows portable (CPU)
 
 on:
   workflow_dispatch:
-  push:
-    branches: ['**']
-    paths:
-      - '.github/workflows/windows.yml'
-      - 'build-aux/windows/**'
-      - 'build-aux/flatpak/install-licenses.py'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'src/**'
-      - 'tests/**'
-      - 'data/icons/**'
-      - 'LICENSE'
-  pull_request:
-    paths:
-      - '.github/workflows/windows.yml'
-      - 'build-aux/windows/**'
-      - 'build-aux/flatpak/install-licenses.py'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'src/**'
-      - 'tests/**'
-      - 'data/icons/**'
-      - 'LICENSE'
 
 permissions:
   contents: read

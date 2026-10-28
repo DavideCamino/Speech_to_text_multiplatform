@@ -1,7 +1,8 @@
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
+import ntpath
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 import tempfile
@@ -13,9 +14,28 @@ HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("windows_package", HERE / "package.py")
 PACKAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PACKAGE)
+LICENSE_SPEC = importlib.util.spec_from_file_location(
+    "dependency_licenses", PACKAGE.ROOT / "build-aux/flatpak/install-licenses.py")
+LICENSES = importlib.util.module_from_spec(LICENSE_SPEC)
+LICENSE_SPEC.loader.exec_module(LICENSES)
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_license_paths_normalize_mixed_windows_separators(self):
+        # Reproduce scandir's mixed strings from the Windows failure. Emulate
+        # Windows lexical paths on Linux, without accessing a Windows drive.
+        parent = r"D:/a/_temp/msys64/tmp/vendor\example-1.0"
+        child = parent + "/nested/COPYING"
+        with patch.object(LICENSES, "normpath", ntpath.normpath), \
+                patch.object(LICENSES, "Path", wraps=PureWindowsPath) as factory:
+            crate = LICENSES.normalized_path(parent)
+            source = LICENSES.normalized_path(child)
+            self.assertEqual(source.relative_to(crate).as_posix(), "nested/COPYING")
+            # Check that strings are normalized *before* Path construction,
+            # not merely that PureWindowsPath can parse a mixed input itself.
+            self.assertEqual(factory.call_args_list[0].args, (ntpath.normpath(parent),))
+            self.assertEqual(factory.call_args_list[1].args, (ntpath.normpath(child),))
+
     def test_parses_only_x86_64_pe_imports(self):
         output = "file format pei-x86-64\n\tDLL Name: KERNEL32.dll\n\tDLL Name: libgtk-4-1.dll\n"
         self.assertEqual(PACKAGE.parse_imports(output), ["KERNEL32.dll", "libgtk-4-1.dll"])

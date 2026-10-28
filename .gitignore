@@ -9,3 +9,4 @@
 /flatpak-repo/
 /dist/
 __pycache__/
+log.txt
