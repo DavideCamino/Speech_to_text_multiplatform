@@ -229,11 +229,52 @@ The final application ID is different from earlier placeholder test builds, so F
 
 For later versions, update `Cargo.toml` and the AppStream release entries together, run the `--release` packaging check, and publish the matching version tag. The manifest also validates desktop/AppStream metadata during every build.
 
-## Windows and macOS
+## Windows: experimental CPU-only portable ZIP
 
-The backend has no Linux-only file-transcription code: audio decoding is in-process through Symphonia, inference uses whisper.cpp, preferences use platform-specific directories, and file dialogs/clipboard are GTK/GIO. FFmpeg is **not** required by the application.
+You can develop on Linux and let **GitHub Actions compile on Windows**. No local Windows compiler is needed; a Windows machine for downloading/testing the result is enough. The initial target is **Windows 10/11 x86_64**, not 32-bit Windows or a native ARM64 build. Actual compatibility must be confirmed on your test machine.
 
-However, **only Linux has been built and smoke-tested so far**. Windows is the next validation target, with selected-file transcription taking priority over live recording; macOS follows. GTK/libadwaita runtime bundling, Windows toolchain selection, microphone permissions (including a macOS app bundle's usage description), code signing, and Windows/macOS installers are not implemented yet. Linux Flatpak packaging is provided above. Cross-platform source is not a promise of tested installers.
+### Build and download through GitHub Actions
+
+1. Commit and push the Windows workflow/scripts. Relevant branch pushes and pull requests trigger `.github/workflows/windows.yml`; it can also be started manually from **Actions → Windows portable (CPU) → Run workflow** once present on the default branch.
+2. The hosted `windows-2022` runner installs a coherent **MSYS2 UCRT64** stack: MSYS2's GNU Rust toolchain, GCC, Clang/libclang, CMake/Ninja, GTK4/libadwaita, and icon/SVG resources. It does not mix those libraries with the runner's MSVC Rust toolchain.
+3. It builds/tests with `Cargo.lock`, no GPU features, and baseline x86_64 CPU flags. `build-aux/windows/package.py` recursively collects imported DLLs from that same prefix and includes runtime-loaded GTK/GIO/GdkPixbuf modules, schemas, icons, fonts/configuration where present, and project/dependency license notices. Unknown DLL dependencies or MSYS-runtime dependencies fail packaging.
+4. A PowerShell smoke test extracts the actual ZIP into a new path containing spaces, strips MSYS2 out of `PATH`, and checks that the launcher opens a window. This is a startup check, **not** proof of successful transcription or microphone support.
+5. Download the **`Speech2Text-windows-x86_64-CPU`** artifact from the workflow run. Extract the artifact download, then extract the inner **`Speech2Text-windows-x86_64.zip`** completely. Its checksum is **`Speech2Text-windows-x86_64.sha256`**.
+6. Open the extracted `Speech2Text` folder and double-click **`Start-Speech2Text.cmd`**. Keep `bin`, `lib`, and `share` together; do not run from inside the ZIP or copy only `speech2text.exe`. The target machine does not need MSYS2, Rust, Python, or a separate GTK installation.
+
+The initial launcher deliberately keeps a console open for diagnostics and uses GTK's software Cairo renderer. GdkPixbuf's absolute-path loader cache is regenerated under `%LOCALAPPDATA%/io.github.davidecamino.Speech2Text/cache` at launch, so moving the extracted application does not leave stale SDK paths or require writing into its installation directory. GTK's own GSettings use an in-memory backend; the app's JSON preferences and downloaded models still use the normal Windows user-profile directories, **not** the portable ZIP folder. Models are not bundled and downloads still require explicit user action.
+
+Optional checksum verification in PowerShell, from the directory containing the ZIP and checksum:
+
+```powershell
+$expected = ((Get-Content ./Speech2Text-windows-x86_64.sha256).Trim() -split '\s+')[0]
+(Get-FileHash ./Speech2Text-windows-x86_64.zip -Algorithm SHA256).Hash -eq $expected
+```
+
+The result should be `True`. This detects corruption, not publisher identity; these builds are **unsigned**, and Windows security software may warn. Do not disable security protection to force an unexpected/blocked executable to run.
+
+### Test on your Windows machine
+
+Prioritize **selected-file CPU transcription** before live recording:
+
+- Check startup, icons, Settings/About, and clipboard behavior without a developer toolchain installed.
+- Select a local whisper.cpp model, or explicitly download Tiny in Settings. Confirm that file selection and model paths work, including paths with spaces/non-ASCII characters.
+- Transcribe a short known WAV, then try MP3/FLAC/OGG/M4A; inspect text and TXT/SRT exports. FFmpeg is not required at runtime.
+- Check cancellation, reopening the app with saved preferences, and the demo rewrite/export view (still no LLM).
+- Then test microphone permission/device selection, capture, and stopping. Windows privacy settings must permit desktop apps to access the microphone.
+- Report the Windows version, workflow run/commit, and console errors. `runtime-manifest.json` lists packaged DLLs; `licenses/msys2-packages.txt` records native/build-tool versions. The separate **`Speech2Text-windows-diagnostics`** artifact contains runner build information and startup logs.
+
+A completed ZIP remains downloadable for manual diagnosis even if the hosted window smoke test fails; inspect the workflow status/logs and **do not treat a failed run as a validated release**. This workflow uploads experimental artifacts only: **no installer, code signing, GPU inference, tag-triggered Windows publication, or automatic GitHub Release upload**. Validate this ZIP before adding an installer or Vulkan support.
+
+Platform-independent packaging tests can also run on Linux:
+
+```sh
+python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
+```
+
+### macOS and validation status
+
+The backend uses in-process Symphonia decoding, whisper.cpp, platform-specific preferences, and GTK/GIO file dialogs/clipboard. However, **only Linux has actually been built and smoke-tested in this development environment**. The Windows workflow and runtime assembly are implemented but have not yet been executed here on Windows. macOS runtime bundling, its microphone usage description, signing, and installer integration remain future work. Cross-platform source is not a promise of tested installers.
 
 ## Data and privacy
 
@@ -311,7 +352,7 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - The CPU+Vulkan Flatpak was built and exported successfully under `io.github.davidecamino.Speech2Text` for version `0.1.0`. `dist/Speech2Text-x86_64.flatpak` was generated and its `SHA256SUMS` check passed.
 - A short `flatpak-builder --run` sandbox launch succeeded. This development launch emitted host accessibility-bus and ALSA device-enumeration warnings; installed-bundle file/microphone/GPU integration should still be tested before publication.
 - The new bundle has not been installed automatically, and the GitHub release workflow has not been executed. No release tag or GitHub publication was created.
-- Live microphone correctness/latency, exhaustive UI interaction, and Windows/macOS builds are not yet verified.
+- Windows packaging: **6 platform-independent tests passed**, covering x86_64 PE parsing, recursive DLL collection, missing/MSYS dependency rejection, safe output handling, runtime layout/license collection, ZIP creation, and checksums. Actionlint and PowerShell AST syntax checks passed on Linux. The real Windows build, relocated-GUI smoke test, and device/file-transcription behavior still require a GitHub Actions run and manual Windows testing. Live microphone correctness/latency, exhaustive UI interaction, and macOS builds are not yet verified.
 
 ## Demo limitations / follow-up work
 

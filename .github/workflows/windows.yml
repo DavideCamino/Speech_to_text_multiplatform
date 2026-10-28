@@ -1,0 +1,125 @@
+name: Windows portable (CPU)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - '.github/workflows/windows.yml'
+      - 'build-aux/windows/**'
+      - 'build-aux/flatpak/install-licenses.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'tests/**'
+      - 'data/icons/**'
+      - 'LICENSE'
+  pull_request:
+    paths:
+      - '.github/workflows/windows.yml'
+      - 'build-aux/windows/**'
+      - 'build-aux/flatpak/install-licenses.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'tests/**'
+      - 'data/icons/**'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CARGO_TARGET_DIR: target
+      CARGO_BUILD_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      CMAKE_GENERATOR: Ninja
+      CC: gcc
+      CXX: g++
+      GGML_NATIVE: 'OFF'
+      GGML_SSE42: 'OFF'
+      GGML_AVX: 'OFF'
+      GGML_AVX2: 'OFF'
+      GGML_BMI2: 'OFF'
+      GGML_FMA: 'OFF'
+      GGML_F16C: 'OFF'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install one coherent UCRT64 toolchain and GTK runtime
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: strict
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+            mingw-w64-ucrt-x86_64-gdk-pixbuf2
+            mingw-w64-ucrt-x86_64-librsvg
+            mingw-w64-ucrt-x86_64-adwaita-icon-theme
+            mingw-w64-ucrt-x86_64-hicolor-icon-theme
+      - name: Check packaging logic
+        run: python -m unittest discover -s build-aux/windows -p 'test_*.py' -v
+      - name: Build and test CPU-only application
+        run: |
+          set -euo pipefail
+          # Use MSYS2's Rust, not the runner's unrelated rustup/MSVC toolchain.
+          /ucrt64/bin/rustc -vV
+          /ucrt64/bin/cargo --version
+          test "$(/ucrt64/bin/rustc -vV | sed -n 's/^host: //p')" = x86_64-pc-windows-gnu
+          export LIBCLANG_PATH="$(cygpath -m "$MINGW_PREFIX/bin")"
+          export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-w64-windows-gnu -resource-dir=\"$(clang -print-resource-dir)\" -I\"$(cygpath -m "$MINGW_PREFIX/include")\""
+          mkdir -p target
+          pacman -Q > target/windows-msys2-packages.txt
+          /ucrt64/bin/rustc -vV > target/windows-build-info.txt
+          # Vendor solely to collect the dependency license/notice files. Build
+          # normally with Cargo.lock; do not install the emitted vendor config.
+          /ucrt64/bin/cargo vendor --locked --versioned-dirs target/windows-vendor > target/windows-vendor-config.toml
+          /ucrt64/bin/cargo build --release --locked --no-default-features --bin speech2text
+          # Reuse release dependencies instead of also building a large debug GTK.
+          # A separate relocated-ZIP smoke test below checks actual window startup.
+          /ucrt64/bin/cargo test --release --locked --no-default-features --lib --tests -- --skip ui::tests::settings_pages_and_menu_surfaces_build
+      - name: Assemble portable ZIP, runtime dependencies, and notices
+        id: package
+        run: python build-aux/windows/package.py --prefix "$(cygpath -m "$MINGW_PREFIX")"
+      - name: Launch relocated ZIP without the SDK in PATH
+        shell: pwsh
+        run: ./build-aux/windows/smoke-test.ps1
+      # Keep a completed experimental ZIP available for manual diagnosis even if
+      # the hosted desktop smoke test fails. Never publish it as a release here.
+      - name: Upload experimental portable ZIP
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speech2Text-windows-x86_64-CPU
+          path: |
+            dist/Speech2Text-windows-x86_64.zip
+            dist/Speech2Text-windows-x86_64.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Windows diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speech2Text-windows-diagnostics
+          path: |
+            dist/windows-smoke/
+            target/windows-build-info.txt
+            target/windows-msys2-packages.txt
+          if-no-files-found: ignore
+          retention-days: 14
