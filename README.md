@@ -120,7 +120,7 @@ flatpak install --user flathub \
   org.freedesktop.Sdk.Extension.llvm21//25.08
 ```
 
-The SDK supplies GTK/libadwaita, CMake, Vulkan headers, and `glslc`; its extensions supply Rust and libclang. You do not need the host's Rust/LLVM/ROCm/CUDA installations for this build. Allow several GB for SDKs, downloaded sources, and build output; a first release build can take a while. The manifest limits Cargo/CMake concurrency to two jobs to reduce peak memory use.
+The SDK supplies GTK/libadwaita, CMake, Vulkan headers, and `glslc`; its extensions supply Rust and libclang. You do not need the host's Rust/LLVM/ROCm/CUDA installations for this build. Allow several GB for SDKs, downloaded sources, and build output; a first release build can take a while. The manifest sets Cargo/CMake concurrency to 16 jobs, limit the concurrency to reduce peak memory use.
 
 ### 2. Check or refresh the locked Cargo sources
 
@@ -143,11 +143,22 @@ The generator uses only Python's standard library, makes no network requests, an
 
 ### 3. Compile and export
 
+Compile with:
 ```sh
 flatpak-builder --user --force-clean --disable-rofiles-fuse \
   --install-deps-from=flathub --repo=flatpak-repo \
   flatpak-build build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json
+```
+if it is needed a clean compilation:
+```sh
+flatpak-builder --user --force-clean --disable-cache \
+  --disable-rofiles-fuse --install-deps-from=flathub \
+  --repo=flatpak-repo flatpak-build \
+  build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json
+```
 
+Then:
+```sh
 mkdir -p dist
 flatpak build-bundle --arch=x86_64 \
   --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
