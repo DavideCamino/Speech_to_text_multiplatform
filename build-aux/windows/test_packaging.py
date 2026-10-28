@@ -115,6 +115,7 @@ class WindowsPackagingTests(unittest.TestCase):
             put("LICENSE", "MIT fixture")
             put("data/icons/io.github.davidecamino.Speech2Text.svg", "<svg/>")
             put("build-aux/windows/Start-Speech2Text.cmd", (HERE / "Start-Speech2Text.cmd").read_text())
+            put("build-aux/windows/patch-whisper.py", (HERE / "patch-whisper.py").read_text(encoding="utf-8"))
             helper = put("build-aux/flatpak/install-licenses.py")
             shutil.copyfile(PACKAGE.ROOT / "build-aux/flatpak/install-licenses.py", helper)
             vendor = root / "target/windows-vendor"
@@ -142,6 +143,7 @@ class WindowsPackagingTests(unittest.TestCase):
                 for expected in ["bin/speech2text.exe", "bin/libexample.dll", "Start-Speech2Text.cmd",
                                  "share/glib-2.0/schemas/gschemas.compiled", "licenses/rust/packages.json",
                                  "licenses/msys2/example/LICENSE", "licenses/msys2-packages.txt",
+                                 "licenses/whisper-rs-sys-windows-patch.py",
                                  "share/icons/hicolor/scalable/apps/io.github.davidecamino.Speech2Text.svg"]:
                     self.assertIn("Speech2Text/" + expected, names)
                 self.assertFalse(any(name.endswith(("icon-theme.cache", "loaders.cache")) for name in names))

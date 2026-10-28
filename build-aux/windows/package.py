@@ -176,8 +176,10 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
     shutil.copy2(ROOT / "LICENSE", licenses / "Speech2Text-LICENSE")
     shutil.copy2(ROOT / "Cargo.lock", licenses / "Cargo.lock")
     shutil.copy2(inventory, licenses / "msys2-packages.txt")
+    shutil.copy2(ROOT / "build-aux/windows/patch-whisper.py", licenses / "whisper-rs-sys-windows-patch.py")
     (licenses / "SOURCES.txt").write_text(
         "Rust dependency versions: Cargo.lock; sources: https://crates.io/\n"
+        "whisper-rs-sys 0.15.0 build fix: whisper-rs-sys-windows-patch.py\n"
         "MSYS2 package versions: msys2-packages.txt (includes build tools).\n"
         "Native package information: https://packages.msys2.org/\n"
         "Native source archives: https://repo.msys2.org/mingw/sources/\n"

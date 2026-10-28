@@ -64,13 +64,14 @@ jobs:
           mkdir -p target
           pacman -Q > target/windows-msys2-packages.txt
           /ucrt64/bin/rustc -vV > target/windows-build-info.txt
-          # Vendor solely to collect the dependency license/notice files. Build
-          # normally with Cargo.lock; do not install the emitted vendor config.
+          # Patch a fresh vendor copy, not Cargo's registry cache. Use its
+          # source-replacement config for BOTH builds so the fix is effective.
           /ucrt64/bin/cargo vendor --locked --versioned-dirs target/windows-vendor > target/windows-vendor-config.toml
-          /ucrt64/bin/cargo build --release --locked --no-default-features --bin speech2text
+          python build-aux/windows/patch-whisper.py target/windows-vendor
+          /ucrt64/bin/cargo --config target/windows-vendor-config.toml build --release --locked --offline --no-default-features --bin speech2text
           # Reuse release dependencies instead of also building a large debug GTK.
           # A separate relocated-ZIP smoke test below checks actual window startup.
-          /ucrt64/bin/cargo test --release --locked --no-default-features --lib --tests -- --skip ui::tests::settings_pages_and_menu_surfaces_build
+          /ucrt64/bin/cargo --config target/windows-vendor-config.toml test --release --locked --offline --no-default-features --lib --tests -- --skip ui::tests::settings_pages_and_menu_surfaces_build
       - name: Assemble portable ZIP, runtime dependencies, and notices
         id: package
         run: python build-aux/windows/package.py --prefix "$(cygpath -m "$MINGW_PREFIX")"
