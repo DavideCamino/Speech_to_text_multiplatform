@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.YOUR_NAME.Speech2Text</id>
+  <id>io.github.davidecamino.Speech2Text</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>Speech2Text</name>
   <summary>Transcribe audio privately with Whisper</summary>
-  <developer id="io.github.yourname">
-    <name>YOUR_NAME</name>
+  <developer id="io.github.davidecamino">
+    <name>Davide Camino</name>
   </developer>
   <description>
     <p>Turn audio files and microphone recordings into text with local Whisper models. Audio and transcripts are not uploaded to a server.</p>
@@ -14,12 +14,16 @@
     <p>The rewrite view is currently a demonstration: it copies the original text unchanged and does not connect to an LLM.</p>
     <p>Choose an existing whisper.cpp model or explicitly download one in Settings. Model files are not bundled; downloading models requires an internet connection and additional disk space.</p>
   </description>
-  <launchable type="desktop-id">io.github.YOUR_NAME.Speech2Text.desktop</launchable>
-  <url type="homepage">https://github.com/YOUR_NAME/YOUR_REPOSITORY</url>
-  <url type="bugtracker">https://github.com/YOUR_NAME/YOUR_REPOSITORY/issues</url>
-  <url type="vcs-browser">https://github.com/YOUR_NAME/YOUR_REPOSITORY</url>
+  <launchable type="desktop-id">io.github.davidecamino.Speech2Text.desktop</launchable>
+  <url type="homepage">https://github.com/DavideCamino/Speech_to_text_multiplatform</url>
+  <url type="bugtracker">https://github.com/DavideCamino/Speech_to_text_multiplatform/issues</url>
+  <url type="vcs-browser">https://github.com/DavideCamino/Speech_to_text_multiplatform</url>
   <content_rating type="oars-1.1"/>
   <releases>
-    <release version="0.1.0" date="2026-10-28"/>
+    <release version="0.1.0" date="2026-10-28">
+      <description>
+        <p>Initial Linux release with local Whisper transcription, microphone recording, CPU and Vulkan inference, TXT/SRT export, and a demonstration rewrite view.</p>
+      </description>
+    </release>
   </releases>
 </component>

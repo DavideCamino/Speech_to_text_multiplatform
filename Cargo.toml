@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.92"
 description = "Local speech transcription for the GNOME desktop"
 license = "MIT"
+authors = ["Davide Camino"]
+repository = "https://github.com/DavideCamino/Speech_to_text_multiplatform"
+homepage = "https://github.com/DavideCamino/Speech_to_text_multiplatform"
 
 [features]
 default = []

@@ -15,7 +15,9 @@ A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.c
 - A second view with an editable example prompt, read-only original/result panes, and a **demo Rewrite action that copies the original unchanged**. Results can be copied or exported as TXT/Markdown. No LLM is contacted.
 - Replace/append confirmation, cancellation that keeps completed segments, unexported-text warnings, and saved non-sensitive preferences.
 
-The application ID is the requested placeholder: `io.github.YOUR_NAME.Speech2Text`.
+Developed by **Davide Camino**. [Source code and releases](https://github.com/DavideCamino/Speech_to_text_multiplatform).
+
+Application ID: `io.github.davidecamino.Speech2Text`. The first release is **0.1.0** (`v0.1.0`), licensed under MIT.
 
 ## Build and run on Linux
 
@@ -130,7 +132,7 @@ From the repository root:
 python3 build-aux/flatpak/generate-cargo-sources.py --check
 python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py'
 python3 build-aux/flatpak/check-packaging.py \
-  build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json
+  build-aux/flatpak/io.github.davidecamino.Speech2Text.json
 ```
 
 Whenever `Cargo.lock` changes, regenerate and **commit** the source list:
@@ -147,14 +149,14 @@ Compile with:
 ```sh
 flatpak-builder --user --force-clean --disable-rofiles-fuse \
   --install-deps-from=flathub --repo=flatpak-repo \
-  flatpak-build build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json
+  flatpak-build build-aux/flatpak/io.github.davidecamino.Speech2Text.json
 ```
 if it is needed a clean compilation:
 ```sh
 flatpak-builder --user --force-clean --disable-cache \
   --disable-rofiles-fuse --install-deps-from=flathub \
   --repo=flatpak-repo flatpak-build \
-  build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json
+  build-aux/flatpak/io.github.davidecamino.Speech2Text.json
 ```
 
 Then:
@@ -163,7 +165,7 @@ mkdir -p dist
 flatpak build-bundle --arch=x86_64 \
   --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
   flatpak-repo dist/Speech2Text-x86_64.flatpak \
-  io.github.YOUR_NAME.Speech2Text stable
+  io.github.davidecamino.Speech2Text stable
 (cd dist && sha256sum Speech2Text-x86_64.flatpak > SHA256SUMS)
 ```
 
@@ -174,7 +176,7 @@ Use an x86_64 host for the commands above. The manifest uses the local working t
 ```sh
 (cd dist && sha256sum --check SHA256SUMS)
 flatpak install --user ./dist/Speech2Text-x86_64.flatpak
-flatpak run io.github.YOUR_NAME.Speech2Text
+flatpak run io.github.davidecamino.Speech2Text
 ```
 
 Test file selection/export through the desktop portals, local model selection/download, microphone recording, CPU mode, and Vulkan mode on an actual GPU. A successful CI build does not prove all GPU/driver combinations work.
@@ -193,11 +195,13 @@ Models are not bundled. Compatible Vulkan drivers must be available through Flat
 `.github/workflows/flatpak.yml` builds on manual dispatch and `v*` tags:
 
 - **Manual run:** Actions → Flatpak bundle → Run workflow. Download the `Speech2Text-flatpak-x86_64` artifact to test the bundle/checksum.
-- **Tagged release:** after replacing the placeholders below, update `Cargo.toml`'s version and the first AppStream `<release>` version/date. The tag must exactly match `v<Cargo.toml version>`.
+- **Tagged release:** update `Cargo.toml`'s version and the first AppStream `<release>` version/date for the release being published. The tag must exactly match `v<Cargo.toml version>`. The initial release uses `v0.1.0`.
+
+**Commit and push the finalized release changes, including renamed assets, before creating the tag.** A tag points to a committed snapshot, not uncommitted files in the working tree. The checks below read the working tree, so committing those checked changes is essential.
 
 ```sh
 python3 build-aux/flatpak/check-packaging.py \
-  build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json --release
+  build-aux/flatpak/io.github.davidecamino.Speech2Text.json --release
 git tag v0.1.0
 git push origin v0.1.0
 ```
@@ -206,24 +210,24 @@ The build runs with read-only repository permissions. A separate release job att
 
 These are **unsigned sideload bundles**. GitHub Releases do not provide automatic Flatpak app updates; users download/install each new bundle. The checksum detects download corruption, not publisher identity independently of GitHub. A signed Flatpak repository or Flathub publication is a separate next step; runtime updates still come from Flathub normally.
 
-### Replace identity placeholders before the first public release
+### Release identity
 
-Use a real ID such as `io.github.YOUR_GITHUB_USERNAME.Speech2Text`. Update the following files **together**, including filenames where indicated:
-
-| File | Required edits |
+| Field | Value |
 | --- | --- |
-| `src/main.rs` | Replace the `.application_id(...)` value. |
-| `src/settings.rs` | Replace the `YOUR_NAME` organization in `ProjectDirs::from(...)`. |
-| `build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json` | Rename to `<YOUR_APP_ID>.json`; replace `app-id` and all identity-dependent install/validation paths. |
-| `data/io.github.YOUR_NAME.Speech2Text.desktop` | Rename to `<YOUR_APP_ID>.desktop`; replace `Icon`. |
-| `data/io.github.YOUR_NAME.Speech2Text.metainfo.xml` | Rename to `<YOUR_APP_ID>.metainfo.xml`; replace `<id>`, `<launchable>`, developer name/ID, and all `YOUR_NAME/YOUR_REPOSITORY` GitHub URLs. The developer ID placeholder is `io.github.yourname`: use a lowercase reverse-DNS developer identity. |
-| `data/icons/io.github.YOUR_NAME.Speech2Text.svg` | Rename to `<YOUR_APP_ID>.svg`. The SVG content has no owner placeholder. |
-| `.github/workflows/flatpak.yml` | Update `MANIFEST` to the renamed manifest's path. |
-| `README.md` | Update identity-dependent example commands/paths and repository references for your project. |
+| Developer | Davide Camino |
+| GitHub account | [DavideCamino](https://github.com/DavideCamino) |
+| Repository/homepage | [DavideCamino/Speech_to_text_multiplatform](https://github.com/DavideCamino/Speech_to_text_multiplatform) |
+| Issue tracker | [GitHub Issues](https://github.com/DavideCamino/Speech_to_text_multiplatform/issues) |
+| Application ID | `io.github.davidecamino.Speech2Text` |
+| AppStream developer ID | `io.github.davidecamino` |
+| Initial version/tag | `0.1.0` / `v0.1.0` |
+| License | MIT; © 2026 Davide Camino and Speech2Text contributors |
 
-`Cargo.toml` and the AppStream release entries also need version updates for each release, but contain no owner placeholder. `LICENSE` uses “Speech2Text contributors”; adjust the attribution if desired. The generated `cargo-sources.json`, generator/config/helper scripts, and Rust-check workflow contain no application-identity placeholder requiring replacement.
+The application, About window, Cargo metadata, desktop launcher, icon, AppStream metadata, Flatpak manifest, and release workflow use this identity. Generic placeholder-detection strings remain intentionally in the packaging checker to prevent accidental placeholder releases.
 
-Changing the application ID after publication creates a different Flatpak identity/data directory. Choose the permanent ID before asking users to install a public release. Run the packaging check again after renaming; also validate the desktop file and AppStream metadata with `desktop-file-validate` and `appstreamcli validate --no-net` (the manifest runs these during the build).
+The final application ID is different from earlier placeholder test builds, so Flatpak creates a **separate settings/model directory** for it. Existing test data is not automatically migrated; select a local model again or download one in the new installation. Changing the ID again after publication would create another application identity, so keep this ID stable.
+
+For later versions, update `Cargo.toml` and the AppStream release entries together, run the `--release` packaging check, and publish the matching version tag. The manifest also validates desktop/AppStream metadata during every build.
 
 ## Windows and macOS
 
@@ -304,7 +308,9 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - Actual CPU transcription and SRT generation succeeded on generated speech in **all five requested audio formats**. FFmpeg/espeak were used only to generate test inputs, not by the application.
 - Vulkan and ROCm selection were exercised on this Linux host; CUDA and Metal runtime selection have not been tested here.
 - Flatpak packaging: 6 Python tests, desktop/AppStream validation, and Flatpak Builder manifest expansion passed. All 284 generated crate archives were verified from the local Cargo cache and successfully resolved using the offline vendor configuration; dependency notice installation was also exercised.
-- The complete sandboxed Flatpak build/install and the GitHub release workflow have **not** been executed here. Run the documented local build or manual Actions workflow before publishing.
+- The CPU+Vulkan Flatpak was built and exported successfully under `io.github.davidecamino.Speech2Text` for version `0.1.0`. `dist/Speech2Text-x86_64.flatpak` was generated and its `SHA256SUMS` check passed.
+- A short `flatpak-builder --run` sandbox launch succeeded. This development launch emitted host accessibility-bus and ALSA device-enumeration warnings; installed-bundle file/microphone/GPU integration should still be tested before publication.
+- The new bundle has not been installed automatically, and the GitHub release workflow has not been executed. No release tag or GitHub publication was created.
 - Live microphone correctness/latency, exhaustive UI interaction, and Windows/macOS builds are not yet verified.
 
 ## Demo limitations / follow-up work

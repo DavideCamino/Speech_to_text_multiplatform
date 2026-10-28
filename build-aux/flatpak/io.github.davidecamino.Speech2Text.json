@@ -1,5 +1,5 @@
 {
-  "app-id": "io.github.YOUR_NAME.Speech2Text",
+  "app-id": "io.github.davidecamino.Speech2Text",
   "runtime": "org.gnome.Platform",
   "runtime-version": "50",
   "sdk": "org.gnome.Sdk",
@@ -43,14 +43,14 @@
       "build-commands": [
         "cargo build --release --frozen --offline --no-default-features --features vulkan --bin speech2text",
         "install -Dm755 target/release/speech2text /app/bin/speech2text",
-        "install -Dm644 data/io.github.YOUR_NAME.Speech2Text.desktop /app/share/applications/io.github.YOUR_NAME.Speech2Text.desktop",
-        "install -Dm644 data/io.github.YOUR_NAME.Speech2Text.metainfo.xml /app/share/metainfo/io.github.YOUR_NAME.Speech2Text.metainfo.xml",
-        "install -Dm644 data/icons/io.github.YOUR_NAME.Speech2Text.svg /app/share/icons/hicolor/scalable/apps/io.github.YOUR_NAME.Speech2Text.svg",
+        "install -Dm644 data/io.github.davidecamino.Speech2Text.desktop /app/share/applications/io.github.davidecamino.Speech2Text.desktop",
+        "install -Dm644 data/io.github.davidecamino.Speech2Text.metainfo.xml /app/share/metainfo/io.github.davidecamino.Speech2Text.metainfo.xml",
+        "install -Dm644 data/icons/io.github.davidecamino.Speech2Text.svg /app/share/icons/hicolor/scalable/apps/io.github.davidecamino.Speech2Text.svg",
         "install -Dm644 LICENSE /app/share/licenses/speech2text/LICENSE",
         "install -Dm644 Cargo.lock /app/share/licenses/speech2text/Cargo.lock",
         "python3 build-aux/flatpak/install-licenses.py cargo/vendor /app/share/licenses/speech2text/dependencies",
-        "desktop-file-validate /app/share/applications/io.github.YOUR_NAME.Speech2Text.desktop",
-        "appstreamcli validate --no-net /app/share/metainfo/io.github.YOUR_NAME.Speech2Text.metainfo.xml"
+        "desktop-file-validate /app/share/applications/io.github.davidecamino.Speech2Text.desktop",
+        "appstreamcli validate --no-net /app/share/metainfo/io.github.davidecamino.Speech2Text.metainfo.xml"
       ],
       "sources": [
         {

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  MANIFEST: build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json
+  MANIFEST: build-aux/flatpak/io.github.davidecamino.Speech2Text.json
 
 jobs:
   build:
