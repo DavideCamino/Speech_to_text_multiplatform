@@ -1,0 +1,9 @@
+# Used only inside the Flatpak build sandbox, not by native developer builds.
+[source.crates-io]
+replace-with = "flatpak-vendor"
+
+[source.flatpak-vendor]
+directory = "cargo/vendor"
+
+[net]
+offline = true

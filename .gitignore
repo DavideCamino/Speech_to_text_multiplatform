@@ -4,3 +4,8 @@
 *.bin
 .DS_Store
 /.private/
+/.flatpak-builder/
+/flatpak-build/
+/flatpak-repo/
+/dist/
+__pycache__/

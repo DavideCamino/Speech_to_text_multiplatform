@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Speech2Text
+Comment=Transcribe audio privately on your computer
+Exec=speech2text
+Icon=io.github.YOUR_NAME.Speech2Text
+Terminal=false
+Categories=AudioVideo;Audio;GTK;
+Keywords=speech;transcription;whisper;subtitles;microphone;
+StartupNotify=true
+DBusActivatable=false

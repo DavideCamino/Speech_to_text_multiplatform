@@ -1,0 +1,83 @@
+name: Flatpak bundle
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  MANIFEST: build-aux/flatpak/io.github.YOUR_NAME.Speech2Text.json
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check packaging and locked dependency sources
+        run: |
+          python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py'
+          python3 build-aux/flatpak/check-packaging.py "$MANIFEST"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            python3 build-aux/flatpak/check-packaging.py "$MANIFEST" --release
+          fi
+      - name: Install Flatpak build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          # Ubuntu hosted runners restrict the unprivileged namespaces needed by
+          # bubblewrap. Relax this only on this disposable CI runner.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Install SDK and compiler extensions
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.gnome.Platform//50 org.gnome.Sdk//50 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08 \
+            org.freedesktop.Sdk.Extension.llvm21//25.08
+      - name: Build CPU and Vulkan package
+        run: |
+          flatpak-builder --user --assumeyes --force-clean --disable-rofiles-fuse \
+            --install-deps-from=flathub --repo=flatpak-repo \
+            flatpak-build "$MANIFEST"
+      - name: Create sideload bundle and checksum
+        run: |
+          mkdir -p dist
+          APP_ID=$(python3 -c 'import json,os; print(json.load(open(os.environ["MANIFEST"]))["app-id"])')
+          flatpak build-bundle --arch=x86_64 \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            flatpak-repo dist/Speech2Text-x86_64.flatpak "$APP_ID" stable
+          (cd dist && sha256sum Speech2Text-x86_64.flatpak > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Speech2Text-flatpak-x86_64
+          path: |
+            dist/Speech2Text-x86_64.flatpak
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Speech2Text-flatpak-x86_64
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/Speech2Text-x86_64.flatpak
+            dist/SHA256SUMS

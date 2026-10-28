@@ -15,6 +15,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake clang libclang-dev pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev
+      - name: Flatpak source and metadata consistency
+        run: |
+          python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py'
+          python3 build-aux/flatpak/check-packaging.py build-aux/flatpak/io.*.json
       - run: cargo fmt --check
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings

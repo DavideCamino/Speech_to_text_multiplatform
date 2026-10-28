@@ -1,0 +1,80 @@
+{
+  "app-id": "io.github.YOUR_NAME.Speech2Text",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable",
+    "org.freedesktop.Sdk.Extension.llvm21"
+  ],
+  "command": "speech2text",
+  "branch": "stable",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--socket=pulseaudio",
+    "--share=network"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "prepend-ld-library-path": "/usr/lib/sdk/llvm21/lib",
+    "env": {
+      "CARGO_HOME": "/run/build/speech2text/cargo",
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_NET_OFFLINE": "true",
+      "CMAKE_BUILD_PARALLEL_LEVEL": "2",
+      "LIBCLANG_PATH": "/usr/lib/sdk/llvm21/lib",
+      "GGML_NATIVE": "OFF",
+      "GGML_SSE42": "OFF",
+      "GGML_AVX": "OFF",
+      "GGML_AVX2": "OFF",
+      "GGML_BMI2": "OFF",
+      "GGML_FMA": "OFF",
+      "GGML_F16C": "OFF"
+    }
+  },
+  "modules": [
+    {
+      "name": "speech2text",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo build --release --frozen --offline --no-default-features --features vulkan --bin speech2text",
+        "install -Dm755 target/release/speech2text /app/bin/speech2text",
+        "install -Dm644 data/io.github.YOUR_NAME.Speech2Text.desktop /app/share/applications/io.github.YOUR_NAME.Speech2Text.desktop",
+        "install -Dm644 data/io.github.YOUR_NAME.Speech2Text.metainfo.xml /app/share/metainfo/io.github.YOUR_NAME.Speech2Text.metainfo.xml",
+        "install -Dm644 data/icons/io.github.YOUR_NAME.Speech2Text.svg /app/share/icons/hicolor/scalable/apps/io.github.YOUR_NAME.Speech2Text.svg",
+        "install -Dm644 LICENSE /app/share/licenses/speech2text/LICENSE",
+        "install -Dm644 Cargo.lock /app/share/licenses/speech2text/Cargo.lock",
+        "python3 build-aux/flatpak/install-licenses.py cargo/vendor /app/share/licenses/speech2text/dependencies",
+        "desktop-file-validate /app/share/applications/io.github.YOUR_NAME.Speech2Text.desktop",
+        "appstreamcli validate --no-net /app/share/metainfo/io.github.YOUR_NAME.Speech2Text.metainfo.xml"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../..",
+          "skip": [
+            ".git",
+            ".github",
+            ".private",
+            "target",
+            ".flatpak-builder",
+            "flatpak-build",
+            "flatpak-repo",
+            "dist",
+            "models"
+          ]
+        },
+        "cargo-sources.json",
+        {
+          "type": "file",
+          "path": "cargo-config.toml",
+          "dest": ".cargo",
+          "dest-filename": "config.toml"
+        }
+      ]
+    }
+  ]
+}
