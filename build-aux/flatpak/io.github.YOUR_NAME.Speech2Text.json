@@ -22,9 +22,9 @@
     "prepend-ld-library-path": "/usr/lib/sdk/llvm21/lib",
     "env": {
       "CARGO_HOME": "/run/build/speech2text/cargo",
-      "CARGO_BUILD_JOBS": "2",
+      "CARGO_BUILD_JOBS": "16",
       "CARGO_NET_OFFLINE": "true",
-      "CMAKE_BUILD_PARALLEL_LEVEL": "2",
+      "CMAKE_BUILD_PARALLEL_LEVEL": "16",
       "LIBCLANG_PATH": "/usr/lib/sdk/llvm21/lib",
       "GGML_NATIVE": "OFF",
       "GGML_SSE42": "OFF",
@@ -32,7 +32,8 @@
       "GGML_AVX2": "OFF",
       "GGML_BMI2": "OFF",
       "GGML_FMA": "OFF",
-      "GGML_F16C": "OFF"
+      "GGML_F16C": "OFF",
+      "BINDGEN_EXTRA_CLANG_ARGS": "-resource-dir=/usr/lib/sdk/llvm21/lib/clang/21"
     }
   },
   "modules": [
