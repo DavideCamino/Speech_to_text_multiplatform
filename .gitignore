@@ -1,0 +1,6 @@
+/target/
+/models/
+*.part
+*.bin
+.DS_Store
+/.private/
