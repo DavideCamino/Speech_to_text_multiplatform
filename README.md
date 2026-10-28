@@ -1,0 +1,141 @@
+# Speech2Text
+
+A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.cpp** via `whisper-rs`.
+
+## Current features
+
+- Transcribe a selected **WAV, MP3, FLAC, OGG/Vorbis, or M4A (AAC/ALAC)** file.
+- Microphone transcription with an input selector, level indicator, duration, Stop, and Cancel.
+- Finalized text uses the theme's normal foreground; revisable live text is grey.
+- Read-only transcript, clipboard copy, UTF-8 TXT, and segment-timed SRT export.
+- Select a local whisper.cpp **ggml `.bin` model**, or explicitly download multilingual Tiny, Base, or Small models. Downloads show progress, support cancellation, and verify pinned SHA-256 checksums before selecting the model.
+- Automatic language detection or a manual Whisper language code (`en`, `it`, `fr`, etc.). Transcription preserves the spoken language; translation is disabled.
+- GPU-enabled builds for Vulkan, CUDA, or Metal, with a runtime switch to CPU mode.
+- A second view with an editable example prompt, read-only original/result panes, and a **demo Rewrite action that copies the original unchanged**. Results can be copied or exported as TXT/Markdown. No LLM is contacted.
+- Replace/append confirmation, cancellation that keeps completed segments, unexported-text warnings, and saved non-sensitive preferences.
+
+The application ID is the requested placeholder: `io.github.YOUR_NAME.Speech2Text`.
+
+## Build and run on Linux
+
+Requirements:
+
+- Rust **1.92+** (edition 2024; required by the current GTK Rust bindings).
+- GTK **4.12+**, libadwaita **1.5+**, their development packages, and `pkg-config`.
+- A C/C++ compiler, CMake, and libclang (for whisper.cpp and generated bindings).
+- ALSA development headers for CPAL microphone support; an operational desktop audio stack.
+- Internet access for Cargo's initial dependency fetch and any explicitly requested model download.
+
+For example, on Ubuntu 24.04:
+
+```sh
+sudo apt install build-essential cmake clang libclang-dev pkg-config \
+  libgtk-4-dev libadwaita-1-dev libasound2-dev
+cargo run
+```
+
+On Arch Linux the corresponding packages include `base-devel`, `cmake`, `clang`, `pkgconf`, `gtk4`, `libadwaita`, and `alsa-lib`.
+
+**Select/download a model first**, then open an audio file or start recording. Base is a useful starting point; Tiny is faster for live transcription. The Hugging Face download confirmation states the approximate size and destination. No model is bundled with the source.
+
+Use a release build for meaningful performance measurements:
+
+```sh
+cargo run --release
+```
+
+### Hardware acceleration
+
+GPU support is implemented as explicit Cargo features, because each backend needs different native tooling. **Enable one GPU feature at a time.** A default build is CPU-only and labels the acceleration switch accordingly.
+
+| Backend | Build/run command | Additional requirements |
+| --- | --- | --- |
+| Vulkan (Linux/Windows) | `cargo run --release --features vulkan` | Vulkan headers, loader, shader compiler (`glslc`), compatible GPU drivers; Windows generally needs the Vulkan SDK |
+| CUDA (NVIDIA) | `cargo run --release --features cuda` | Compatible NVIDIA GPU/driver and CUDA toolkit including `nvcc` |
+| Metal (macOS) | `cargo run --release --features metal` | Xcode command-line tools and supported Apple hardware |
+
+For example, Ubuntu Vulkan development packages include `libvulkan-dev` and `glslc`; Arch uses `vulkan-headers`, `vulkan-icd-loader`, and `shaderc`, plus the appropriate vendor driver.
+
+In a GPU-enabled build the app requests GPU inference by default. Disable **Hardware acceleration** to force CPU mode. Native backend initialization determines device availability and may fall back to CPU; this demo does **not** claim to report the actual device selected. If model initialization fails, the error explains that CPU mode can be tried. There is not yet a GPU-device picker.
+
+## Windows and macOS
+
+The backend has no Linux-only file-transcription code: audio decoding is in-process through Symphonia, inference uses whisper.cpp, preferences use platform-specific directories, and file dialogs/clipboard are GTK/GIO. FFmpeg is **not** required by the application.
+
+However, **only Linux has been built and smoke-tested so far**. Windows is the next validation target, with selected-file transcription taking priority over live recording; macOS follows. GTK/libadwaita runtime bundling, Windows toolchain selection, microphone permissions (including a macOS app bundle's usage description), code signing, installers, and Flatpak packaging are not implemented yet. Cross-platform source is not a promise of tested installers.
+
+## Data and privacy
+
+- Audio is decoded/captured in memory, not saved by the app. Long files are processed incrementally.
+- Transcript text and rewrite prompts/results are not persisted automatically.
+- Model paths, language, microphone selection, and the acceleration preference are saved as JSON in the OS-specific application configuration directory.
+- Downloaded models live in the OS-specific application data directory under `models/`.
+- Only explicit model downloads make application network requests, to Hugging Face and its download/CDN redirects. No audio/text is uploaded. Native Whisper logging hooks are silenced to avoid logging recognized words.
+- TXT/Markdown/SRT export writes only to the location selected in the file chooser. Markdown export preserves the result as-is; it does not invent Markdown formatting.
+
+## Architecture
+
+```text
+src/
+  transcript.rs          Timed segments, normalization, plain text and SRT
+  settings.rs            Platform directories and JSON preferences
+  model.rs               Model catalog, cancellable HTTPS download, SHA-256
+  audio/
+    decode.rs            Incremental Symphonia file decoding and mono mixing
+    capture.rs           CPAL input stream, bounded callback queue, level meter
+    resample.rs          Stateful windowed-sinc conversion to 16 kHz
+  transcription/
+    engine.rs            Whisper context/state and per-window recognition
+    worker.rs            Job lifecycle, file chunks, live provisional/final events
+  ui/
+    views.rs             GTK/libadwaita widget construction
+    dialogs.rs           Confirmation, file selection, asynchronous export
+    mod.rs               Controller: state, event polling, navigation, actions
+```
+
+Workers receive settings snapshots and emit typed events. GTK objects never cross thread boundaries. The UI polls bounded event queues through GLib; file decoding, inference, audio resampling, and downloads do not run on the UI thread. Audio queue overflow or device errors stop the job with an explicit error instead of silently dropping speech. Original timed segments stay independent of the rewrite result, which is why rewritten subtitles are not offered.
+
+## Tests and backend tools
+
+```sh
+cargo fmt --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+
+# Explicit download to a directory you choose:
+cargo run --example download_model -- ./models tiny
+
+# Exercise the same file-transcription worker without creating a GTK window:
+cargo run --release --example transcribe -- ./models/ggml-tiny.bin ./audio.wav
+
+# GPU-enabled equivalent:
+cargo run --release --features vulkan --example transcribe -- \
+  ./models/ggml-tiny.bin ./audio.m4a --gpu
+```
+
+The transcription example prints plain text to stdout and SRT to stderr. The normal app does not print transcripts.
+
+Automated tests cover SRT formatting/Unicode, segment normalization, resampling across packet boundaries, incremental stereo WAV decoding, invalid input, worker model errors, and pre-cancelled downloads. They do not require a model, network access, display, or microphone, but native build dependencies are still required.
+
+### Validation performed in this environment
+
+- `cargo test`: **7 tests passed**.
+- `cargo clippy --all-targets -- -D warnings`: passed.
+- GTK desktop launch smoke test: no GTK errors; ALSA device enumeration emitted host-specific warnings.
+- Tiny model downloaded and verified through the actual application downloader.
+- Actual CPU transcription and SRT generation succeeded on generated speech in **all five requested audio formats**. FFmpeg/espeak were used only to generate test inputs, not by the application.
+- Vulkan build attempted: blocked by missing **Vulkan development headers** on this host. GPU runtime behavior is not yet verified.
+- Live microphone correctness/latency, exhaustive UI interaction, and Windows/macOS builds are not yet verified.
+
+## Demo limitations / follow-up work
+
+- Whisper is chunk-based, not a native streaming recognizer. Live inference is scheduled roughly every three seconds after the previous pass; actual latency depends on hardware/model size. It retains a revisable tail and commits sufficiently old segment boundaries, with a 28-second forced window limit. Provisional words can change.
+- Files are processed in bounded 28-second windows. Hard boundaries can split words or lose context; timestamps are approximate. Better VAD/overlap handling and alignment are follow-up work, not professional subtitle guarantees.
+- Silence gating is deliberately conservative; noisy silence can still cause Whisper hallucinations.
+- Cancel takes effect between decoding/inference passes; it does **not** interrupt an in-flight native inference call or model load. Stop finishes buffered audio. Downloads are cancellation-polled even while waiting for network data.
+- Real-time capture requires inference to keep up. Its bounded callback queue may overflow on slow hardware; a clear error preserves completed text. Select Tiny or use a supported GPU build.
+- Device names are enumerated at startup; there is no hot-plug refresh UI yet. Some unusual input sample formats are not supported.
+- File progress is updated at inference-window boundaries; it can remain unchanged while a model loads or the first window runs.
+- No model download resume, transcript history, automatic audio saving, translation, speaker diarization, LLM, packaging, or platform-specific installer integration yet.
+
+The agreed requirements remain in [`question.md`](question.md).
