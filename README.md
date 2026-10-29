@@ -229,18 +229,20 @@ The final application ID is different from earlier placeholder test builds, so F
 
 For later versions, update `Cargo.toml` and the AppStream release entries together, run the `--release` packaging check, and publish the matching version tag. The manifest also validates desktop/AppStream metadata during every build.
 
-## Windows: experimental CPU-only portable ZIP
+## Windows: installer and portable ZIP (CPU + Vulkan)
 
 You can develop on Linux and let **GitHub Actions compile on Windows**. No local Windows compiler is needed; a Windows machine for downloading/testing the result is enough. The initial target is **Windows 10/11 x86_64**, not 32-bit Windows or a native ARM64 build. Actual compatibility must be confirmed on your test machine.
 
 ### Build and download through GitHub Actions
 
-1. Commit and push the Windows workflow/scripts to the default branch, then start **Actions → Windows portable (CPU) → Run workflow**. `.github/workflows/windows.yml` is **manual-only**: ordinary pushes, pull requests, and tags do not create Windows artifacts. The normal Rust-check workflow still runs the platform-independent packaging tests automatically.
-2. The hosted `windows-2022` runner installs a coherent **MSYS2 UCRT64** stack: MSYS2's GNU Rust toolchain, GCC, Clang/libclang, CMake/Ninja, GTK4/libadwaita, and icon/SVG resources. It does not mix those libraries with the runner's MSVC Rust toolchain.
-3. It vendors the locked Rust dependencies, applies `build-aux/windows/patch-whisper.py`, and builds/tests offline from that vendor configuration, with no GPU features and baseline x86_64 CPU flags. The pinned `whisper-rs-sys 0.15.0` incorrectly passes MSVC's `/utf-8` option to GCC; this guarded patch restricts it to MSVC while preserving Windows `advapi32` linking. Only the fresh vendor copy and its file checksum change—not Cargo's registry cache, `Cargo.lock`, or Linux/Flatpak sources. The patch script is included with the bundle's source/license information. `build-aux/windows/package.py` recursively collects imported DLLs from that same prefix and includes runtime-loaded GTK/GIO/GdkPixbuf modules, schemas, icons, fonts/configuration where present, and project/dependency license notices. Unknown DLL dependencies or MSYS-runtime dependencies fail packaging.
-4. A PowerShell smoke test extracts the actual ZIP into a new path containing spaces, strips MSYS2 out of `PATH`, and checks that the launcher opens a window. This is a startup check, **not** proof of successful transcription or microphone support.
-5. Download the **`Speech2Text-windows-x86_64-CPU`** artifact from the workflow run. Extract the artifact download, then extract the inner **`Speech2Text-windows-x86_64.zip`** completely. Its checksum is **`Speech2Text-windows-x86_64.sha256`**.
-6. Open the extracted `Speech2Text` folder and double-click **`Start-Speech2Text.cmd`**. Keep `bin`, `lib`, and `share` together; do not run from inside the ZIP or copy only `speech2text.exe`. The target machine does not need MSYS2, Rust, Python, or a separate GTK installation.
+1. Commit and push the workflow/scripts, then start **Actions → Windows installer (Vulkan) → Run workflow**. Ordinary branch pushes and pull requests do not create installers. The normal Rust-check workflow still runs the platform-independent packaging tests.
+2. The `windows-2022` runner installs one coherent **MSYS2 UCRT64** GNU Rust/GCC/GTK stack, plus Vulkan headers, loader, and `shaderc`. No separate LunarG SDK is required. It builds with `--features vulkan`, the committed `vendor/whisper-rs-sys` fixes, baseline CPU flags, and a short `C:/s2t-target` output path.
+3. `build-aux/windows/package.py` recursively collects imported DLLs from the same prefix, runtime-loaded GTK/GIO/GdkPixbuf modules, schemas, icons, fonts/configuration, licenses, and the modified Whisper dependency's source. Unknown DLLs or MSYS runtime dependencies fail packaging. Build tools and models are not shipped.
+4. A smoke test relocates the ZIP to a path with spaces and checks window startup/SVG loading without MSYS2 on PATH. Inno Setup then creates a **per-user installer**, with Start Menu and optional desktop shortcuts. A second test silently installs it, checks the installed app, and uninstalls it.
+5. Download the **`Speech2Text-windows-x86_64-Vulkan`** artifact. It contains `Speech2Text-<version>-windows-x86_64-setup.exe`, the portable `Speech2Text-windows-x86_64.zip`, and SHA-256 checksums. Run the installer, or extract the entire portable ZIP and launch `Start-Speech2Text.cmd`. Keep all runtime directories together.
+6. For automatic publication, update `Cargo.toml`'s version and push a matching tag such as `v0.1.0`. After build/tests pass, a separate least-privilege job creates or updates the GitHub Release and attaches the packages. Only the release job has write permission.
+
+The target machine needs no Rust, MSYS2, GTK installation, or Vulkan SDK. The package includes MSYS2's Vulkan **loader**, not a GPU driver. Vulkan inference still requires a compatible GPU and current vendor driver; CPU mode remains available in preferences. Hosted runners check startup, **not GPU transcription**. Uninstall leaves models/preferences in the user's profile untouched.
 
 The initial launcher deliberately keeps a console open for diagnostics and uses GTK's software Cairo renderer. GdkPixbuf's absolute-path loader cache is regenerated under `%LOCALAPPDATA%/io.github.davidecamino.Speech2Text/cache` at launch, so moving the extracted application does not leave stale SDK paths or require writing into its installation directory. GTK's own GSettings use an in-memory backend; the app's JSON preferences and downloaded models still use the normal Windows user-profile directories, **not** the portable ZIP folder. Models are not bundled and downloads still require explicit user action.
 
@@ -264,7 +266,7 @@ Prioritize **selected-file CPU transcription** before live recording:
 - Then test microphone permission/device selection, capture, and stopping. Windows privacy settings must permit desktop apps to access the microphone.
 - Report the Windows version, workflow run/commit, and console errors. `runtime-manifest.json` lists packaged DLLs; `licenses/msys2-packages.txt` records native/build-tool versions. The separate **`Speech2Text-windows-diagnostics`** artifact contains runner build information and startup logs.
 
-A completed ZIP remains downloadable for manual diagnosis even if the hosted window smoke test fails; inspect the workflow status/logs and **do not treat a failed run as a validated release**. This workflow uploads experimental artifacts only: **no installer, code signing, GPU inference, tag-triggered Windows publication, or automatic GitHub Release upload**. Validate this ZIP before adding an installer or Vulkan support.
+Packages are uploaded/published only after all build and startup/install checks pass. On failure, inspect the diagnostics artifact. These checks do not replace manual CPU/Vulkan transcription, microphone, and clean-machine testing. Code signing is not configured; unsigned installers may trigger SmartScreen warnings.
 
 Platform-independent packaging tests can also run on Linux:
 
@@ -274,7 +276,7 @@ python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
 
 ### macOS and validation status
 
-The backend uses in-process Symphonia decoding, whisper.cpp, platform-specific preferences, and GTK/GIO file dialogs/clipboard. However, **only Linux has actually been built and smoke-tested in this development environment**. The Windows workflow and runtime assembly are implemented but have not yet been executed here on Windows. macOS runtime bundling, its microphone usage description, signing, and installer integration remain future work. Cross-platform source is not a promise of tested installers.
+The backend uses in-process Symphonia decoding, whisper.cpp, platform-specific preferences, and GTK/GIO file dialogs/clipboard. Windows CPU/Vulkan release compilation and runtime assembly have been exercised locally. The GitHub-hosted installer workflow must still be validated on its first run. GPU inference and clean-machine compatibility require manual testing. macOS runtime bundling, microphone usage description, signing, and installer integration remain future work.
 
 ## Data and privacy
 
@@ -352,7 +354,7 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - The CPU+Vulkan Flatpak was built and exported successfully under `io.github.davidecamino.Speech2Text` for version `0.1.0`. `dist/Speech2Text-x86_64.flatpak` was generated and its `SHA256SUMS` check passed.
 - A short `flatpak-builder --run` sandbox launch succeeded. This development launch emitted host accessibility-bus and ALSA device-enumeration warnings; installed-bundle file/microphone/GPU integration should still be tested before publication.
 - The new bundle has not been installed automatically, and the GitHub release workflow has not been executed. No release tag or GitHub publication was created.
-- Windows packaging: **11 platform-independent tests passed**, covering the guarded Whisper compiler-flag patch and vendor checksums/version checks, mixed-separator Windows license paths, x86_64 PE parsing, recursive DLL collection, missing/MSYS dependency rejection, safe output handling, runtime layout/license collection, ZIP creation, and checksums. Actionlint and PowerShell AST syntax checks passed on Linux. The real Windows build, relocated-GUI smoke test, and device/file-transcription behavior still require a GitHub Actions run and manual Windows testing. Live microphone correctness/latency, exhaustive UI interaction, and macOS builds are not yet verified.
+- Windows packaging: **7 platform-independent tests passed**, covering license paths, x86_64 PE parsing, recursive DLL collection, missing/MSYS dependency rejection, safe output handling, runtime/source/license collection, ZIP creation, and checksums. A fresh CPU+Vulkan release build using MSYS2 Vulkan packages passed locally, as did 12 Rust tests (one GTK test filtered out), relocated-ZIP startup, Inno Setup compilation, silent installation, installed-window startup, and uninstallation. Startup emitted a non-fatal missing-session-D-Bus warning. The GitHub workflow, clean-machine compatibility, GPU inference, and microphone behavior still require validation.
 
 ## Demo limitations / follow-up work
 
@@ -363,6 +365,6 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - Real-time capture requires inference to keep up. Its bounded callback queue may overflow on slow hardware; a clear error preserves completed text. Select Tiny or use a supported GPU build.
 - Device names are enumerated at startup; there is no hot-plug refresh UI yet. Some unusual input sample formats are not supported.
 - File progress is updated at inference-window boundaries; it can remain unchanged while a model loads or the first window runs.
-- No model download resume, transcript history, automatic audio saving, translation, speaker diarization, LLM, Flathub publication/automatic app updates, or Windows/macOS installer integration yet.
+- No model download resume, transcript history, automatic audio saving, translation, speaker diarization, LLM, Flathub publication/automatic app updates, or macOS installer integration yet. Windows installers are unsigned; automatic updates are not implemented.
 
 The agreed requirements remain in [`question.md`](question.md).

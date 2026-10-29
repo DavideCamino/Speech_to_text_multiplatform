@@ -115,7 +115,9 @@ class WindowsPackagingTests(unittest.TestCase):
             put("LICENSE", "MIT fixture")
             put("data/icons/io.github.davidecamino.Speech2Text.svg", "<svg/>")
             put("build-aux/windows/Start-Speech2Text.cmd", (HERE / "Start-Speech2Text.cmd").read_text())
-            put("build-aux/windows/patch-whisper.py", (HERE / "patch-whisper.py").read_text(encoding="utf-8"))
+            put("vendor/whisper-rs-sys/PATCH.md", "local build fixes")
+            put("vendor/whisper-rs-sys/Cargo.toml", '[package]\nname="whisper-rs-sys"\nversion="0.15.0"\nlicense="Unlicense"\n')
+            put("vendor/whisper-rs-sys/whisper.cpp/LICENSE", "native dependency notice")
             helper = put("build-aux/flatpak/install-licenses.py")
             shutil.copyfile(PACKAGE.ROOT / "build-aux/flatpak/install-licenses.py", helper)
             vendor = root / "target/windows-vendor"
@@ -143,7 +145,8 @@ class WindowsPackagingTests(unittest.TestCase):
                 for expected in ["bin/speech2text.exe", "bin/libexample.dll", "Start-Speech2Text.cmd",
                                  "share/glib-2.0/schemas/gschemas.compiled", "licenses/rust/packages.json",
                                  "licenses/msys2/example/LICENSE", "licenses/msys2-packages.txt",
-                                 "licenses/whisper-rs-sys-windows-patch.py",
+                                 "licenses/whisper-rs-sys-PATCH.md", "licenses/whisper-rs-sys-source.zip",
+                                 "licenses/local-rust/packages.json",
                                  "share/icons/hicolor/scalable/apps/io.github.davidecamino.Speech2Text.svg"]:
                     self.assertIn("Speech2Text/" + expected, names)
                 self.assertFalse(any(name.endswith(("icon-theme.cache", "loaders.cache")) for name in names))
@@ -151,7 +154,7 @@ class WindowsPackagingTests(unittest.TestCase):
                 launcher = output.read("Speech2Text/Start-Speech2Text.cmd")
                 self.assertNotIn(b"\n", launcher.replace(b"\r\n", b""))
                 report = json.loads(output.read("Speech2Text/runtime-manifest.json"))
-                self.assertEqual(report["inference_backend"], "CPU")
+                self.assertEqual(report["inference_backend"], "CPU + Vulkan")
                 self.assertEqual(report["version"], "0.1.0")
             digest, name = archive.with_suffix(".sha256").read_text().split()
             self.assertEqual(name, archive.name)

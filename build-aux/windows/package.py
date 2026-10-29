@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a relocatable CPU-only Windows GTK runtime from one UCRT64 prefix.
+"""Assemble a relocatable CPU + Vulkan Windows GTK runtime from one UCRT64 prefix.
 
 Run with MSYS2's native UCRT64 Python after building speech2text.exe. Never
 resolve dependencies from PATH: all non-system DLLs must come from this prefix.
@@ -176,10 +176,16 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
     shutil.copy2(ROOT / "LICENSE", licenses / "Speech2Text-LICENSE")
     shutil.copy2(ROOT / "Cargo.lock", licenses / "Cargo.lock")
     shutil.copy2(inventory, licenses / "msys2-packages.txt")
-    shutil.copy2(ROOT / "build-aux/windows/patch-whisper.py", licenses / "whisper-rs-sys-windows-patch.py")
+    shutil.copy2(ROOT / "vendor/whisper-rs-sys/PATCH.md", licenses / "whisper-rs-sys-PATCH.md")
+    # Preserve the exact modified native dependency sources, not Cargo's
+    # unpatched registry copy. This is also useful for reproducing the build.
+    with zipfile.ZipFile(licenses / "whisper-rs-sys-source.zip", "w", zipfile.ZIP_DEFLATED) as source_zip:
+        for source in sorted((ROOT / "vendor/whisper-rs-sys").rglob("*")):
+            if source.is_file():
+                source_zip.write(source, Path("whisper-rs-sys") / source.relative_to(ROOT / "vendor/whisper-rs-sys"))
     (licenses / "SOURCES.txt").write_text(
         "Rust dependency versions: Cargo.lock; sources: https://crates.io/\n"
-        "whisper-rs-sys 0.15.0 build fix: whisper-rs-sys-windows-patch.py\n"
+        "Modified whisper-rs-sys: whisper-rs-sys-source.zip and whisper-rs-sys-PATCH.md\n"
         "MSYS2 package versions: msys2-packages.txt (includes build tools).\n"
         "Native package information: https://packages.msys2.org/\n"
         "Native source archives: https://repo.msys2.org/mingw/sources/\n"
@@ -192,19 +198,22 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.install(vendor, licenses / "rust")
+    module.install(ROOT / "vendor", licenses / "local-rust")
 
     with (ROOT / "Cargo.toml").open("rb") as handle:
         version = tomllib.load(handle)["package"]["version"]
-    report.update({"version": version, "architecture": "x86_64", "inference_backend": "CPU"})
+    report.update({"version": version, "architecture": "x86_64", "inference_backend": "CPU + Vulkan"})
     (bundle / "runtime-manifest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     launcher = (ROOT / "build-aux/windows/Start-Speech2Text.cmd").read_text(encoding="ascii")
     (bundle / "Start-Speech2Text.cmd").write_text(launcher, encoding="ascii", newline="\r\n")
     (bundle / "README.txt").write_text(
-        f"Speech2Text {version} - experimental Windows x86_64 CPU build\n\n"
+        f"Speech2Text {version} - Windows x86_64 CPU + Vulkan build\n\n"
         "Extract this whole folder, then double-click Start-Speech2Text.cmd.\n"
         "Do not run the application from inside the ZIP or copy just the EXE.\n"
-        "No MSYS2, GTK, Python, Rust, or installer is needed on the test machine.\n"
-        "A console window remains open for diagnostics in this initial build.\n"
+        "No MSYS2, GTK, Python, Rust, or Vulkan SDK installation is needed.\n"
+        "Vulkan requires a compatible GPU and a current vendor GPU driver.\n"
+        "The bundled Vulkan loader is not a GPU driver. Use CPU mode if needed.\n"
+        "A console window remains open for diagnostics.\n"
         "Select/download a whisper.cpp model in Settings, then open an audio file.\n"
         "Models are not bundled. Preferences and downloads use your Windows user profile.\n"
         "This build is unsigned and experimental. Report errors and your Windows version:\n"

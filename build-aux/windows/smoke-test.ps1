@@ -1,18 +1,23 @@
 # Test the actual ZIP after relocation, with no MSYS2 directory in PATH.
 param(
     [string]$Archive = "dist/Speech2Text-windows-x86_64.zip",
-    [string]$LogDirectory = "dist/windows-smoke"
+    [string]$LogDirectory = "dist/windows-smoke",
+    [string]$BundleDirectory = ""
 )
 $ErrorActionPreference = "Stop"
-$Archive = (Resolve-Path $Archive).Path
+if (-not $BundleDirectory) { $Archive = (Resolve-Path $Archive).Path }
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 $LogDirectory = (Resolve-Path $LogDirectory).Path
 $Destination = Join-Path ([IO.Path]::GetTempPath()) ("Speech2Text portable test " + [guid]::NewGuid().ToString("N"))
 $LauncherProcess = $null
 $App = $null
 try {
-    Expand-Archive -LiteralPath $Archive -DestinationPath $Destination
-    $Bundle = Join-Path $Destination "Speech2Text"
+    if ($BundleDirectory) {
+        $Bundle = (Resolve-Path $BundleDirectory).Path
+    } else {
+        Expand-Archive -LiteralPath $Archive -DestinationPath $Destination
+        $Bundle = Join-Path $Destination "Speech2Text"
+    }
     $Executable = Join-Path $Bundle "bin/speech2text.exe"
     $Launcher = Join-Path $Bundle "Start-Speech2Text.cmd"
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -28,6 +33,8 @@ try {
         $App = Get-Process -Name speech2text -ErrorAction SilentlyContinue |
             Where-Object { $_.Path -eq $Executable } | Select-Object -First 1
         if ($null -ne $App) {
+            # Retain a process handle so ExitCode remains readable after exit.
+            $null = $App.Handle
             $App.Refresh()
             if ($App.MainWindowHandle -ne 0 -and $App.MainWindowTitle -eq "Speech2Text") { break }
         }
@@ -47,7 +54,7 @@ try {
     if (-not (Test-Path $LoaderCache) -or -not (Select-String -LiteralPath $LoaderCache -Pattern '^"svg"\s' -Quiet)) {
         throw "The relocated runtime did not successfully load its SVG image plugin"
     }
-    Write-Host "Portable ZIP opened a window and loaded SVG support after relocation, without MSYS2 in PATH."
+    Write-Host "Bundle opened a window and loaded SVG support without MSYS2 in PATH (not a GPU inference test)."
     $null = $App.CloseMainWindow()
     if ($App.WaitForExit(5000)) {
         if ($App.ExitCode -ne 0) { throw "Application exited with code $($App.ExitCode)" }

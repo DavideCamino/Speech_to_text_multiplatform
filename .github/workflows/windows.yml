@@ -1,7 +1,9 @@
-name: Windows portable (CPU)
+name: Windows installer (Vulkan)
 
 on:
   workflow_dispatch:
+  push:
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -14,12 +16,13 @@ jobs:
       run:
         shell: msys2 {0}
     env:
-      CARGO_TARGET_DIR: target
+      CARGO_TARGET_DIR: C:/s2t-target
       CARGO_BUILD_JOBS: '2'
       CMAKE_BUILD_PARALLEL_LEVEL: '2'
       CMAKE_GENERATOR: Ninja
       CC: gcc
       CXX: g++
+      # Avoid generating a binary optimized only for the hosted runner's CPU.
       GGML_NATIVE: 'OFF'
       GGML_SSE42: 'OFF'
       GGML_AVX: 'OFF'
@@ -29,7 +32,7 @@ jobs:
       GGML_F16C: 'OFF'
     steps:
       - uses: actions/checkout@v4
-      - name: Install one coherent UCRT64 toolchain and GTK runtime
+      - name: Install coherent UCRT64 build and runtime dependencies
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -50,54 +53,90 @@ jobs:
             mingw-w64-ucrt-x86_64-librsvg
             mingw-w64-ucrt-x86_64-adwaita-icon-theme
             mingw-w64-ucrt-x86_64-hicolor-icon-theme
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-vulkan-loader
+            mingw-w64-ucrt-x86_64-shaderc
       - name: Check packaging logic
         run: python -m unittest discover -s build-aux/windows -p 'test_*.py' -v
-      - name: Build and test CPU-only application
+      - name: Build and test CPU + Vulkan application
         run: |
           set -euo pipefail
-          # Use MSYS2's Rust, not the runner's unrelated rustup/MSVC toolchain.
-          /ucrt64/bin/rustc -vV
-          /ucrt64/bin/cargo --version
-          test "$(/ucrt64/bin/rustc -vV | sed -n 's/^host: //p')" = x86_64-pc-windows-gnu
           export LIBCLANG_PATH="$(cygpath -m "$MINGW_PREFIX/bin")"
-          export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-w64-windows-gnu -resource-dir=\"$(clang -print-resource-dir)\" -I\"$(cygpath -m "$MINGW_PREFIX/include")\""
+          # The MSYS2 prefix supplies headers, import libraries and glslc;
+          # a separate LunarG Vulkan SDK is not needed on the CI runner.
+          export VULKAN_SDK="$(cygpath -m "$MINGW_PREFIX")"
           mkdir -p target
           pacman -Q > target/windows-msys2-packages.txt
-          /ucrt64/bin/rustc -vV > target/windows-build-info.txt
-          # Patch a fresh vendor copy, not Cargo's registry cache. Use its
-          # source-replacement config for BOTH builds so the fix is effective.
-          /ucrt64/bin/cargo vendor --locked --versioned-dirs target/windows-vendor > target/windows-vendor-config.toml
-          python build-aux/windows/patch-whisper.py target/windows-vendor
-          /ucrt64/bin/cargo --config target/windows-vendor-config.toml build --release --locked --offline --no-default-features --bin speech2text
-          # Reuse release dependencies instead of also building a large debug GTK.
-          # A separate relocated-ZIP smoke test below checks actual window startup.
-          /ucrt64/bin/cargo --config target/windows-vendor-config.toml test --release --locked --offline --no-default-features --lib --tests -- --skip ui::tests::settings_pages_and_menu_surfaces_build
-      - name: Assemble portable ZIP, runtime dependencies, and notices
-        id: package
-        run: python build-aux/windows/package.py --prefix "$(cygpath -m "$MINGW_PREFIX")"
-      - name: Launch relocated ZIP without the SDK in PATH
+          rustc -vV > target/windows-build-info.txt
+          glslc --version >> target/windows-build-info.txt
+          # Registry sources are used for license collection, not to replace
+          # the patched dependency already committed under vendor/.
+          cargo vendor --locked --versioned-dirs target/windows-vendor > target/windows-vendor-config.toml
+          cargo build --release --locked --features vulkan --bin speech2text
+          cargo test --release --locked --features vulkan --lib --tests -- --skip ui::tests::settings_pages_and_menu_surfaces_build
+      - name: Assemble portable runtime, sources and notices
+        run: |
+          python build-aux/windows/package.py --prefix "$(cygpath -m "$MINGW_PREFIX")" --binary "$CARGO_TARGET_DIR/release/speech2text.exe"
+      - name: Launch relocated ZIP without build tools in PATH
         shell: pwsh
         run: ./build-aux/windows/smoke-test.ps1
-      # Keep a completed experimental ZIP available for manual diagnosis even if
-      # the hosted desktop smoke test fails. Never publish it as a release here.
-      - name: Upload experimental portable ZIP
-        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+      - name: Create installer and checksums
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          VERSION="$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Release tag must match Cargo.toml version: v$VERSION" >&2
+            exit 1
+          fi
+          MSYS2_ARG_CONV_EXCL='*' '/c/Program Files (x86)/Inno Setup 6/ISCC.exe' "/DAppVersion=$VERSION" build-aux/windows/installer.iss
+          (cd dist && sha256sum *-setup.exe > Speech2Text-installer.sha256)
+      - name: Test silent install, installed window startup and uninstall
+        shell: pwsh
+        run: ./build-aux/windows/test-installer.ps1
+      - name: Upload Windows packages
         uses: actions/upload-artifact@v4
         with:
-          name: Speech2Text-windows-x86_64-CPU
+          name: Speech2Text-windows-x86_64-Vulkan
           path: |
-            dist/Speech2Text-windows-x86_64.zip
-            dist/Speech2Text-windows-x86_64.sha256
+            dist/*-setup.exe
+            dist/*.zip
+            dist/*.sha256
           if-no-files-found: error
           retention-days: 14
-      - name: Upload Windows diagnostics
+      - name: Upload diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: Speech2Text-windows-diagnostics
           path: |
             dist/windows-smoke/
+            dist/windows-installer-smoke/
             target/windows-build-info.txt
             target/windows-msys2-packages.txt
           if-no-files-found: ignore
           retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Speech2Text-windows-x86_64-Vulkan
+          path: packages
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            packages/*-setup.exe
+            packages/*.zip
+            packages/*.sha256
