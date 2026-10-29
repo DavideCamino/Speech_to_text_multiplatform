@@ -3460,20 +3460,6 @@
   {
     "type": "archive",
     "archive-type": "tar-gzip",
-    "url": "https://static.crates.io/crates/whisper-rs-sys/whisper-rs-sys-0.15.0.crate",
-    "sha256": "6986c0fe081241d391f09b9a071fbcbb59720c3563628c3c829057cf69f2a56f",
-    "strip-components": 1,
-    "dest": "cargo/vendor/whisper-rs-sys-0.15.0"
-  },
-  {
-    "type": "inline",
-    "dest": "cargo/vendor/whisper-rs-sys-0.15.0",
-    "dest-filename": ".cargo-checksum.json",
-    "contents": "{\"files\": {}, \"package\": \"6986c0fe081241d391f09b9a071fbcbb59720c3563628c3c829057cf69f2a56f\"}\n"
-  },
-  {
-    "type": "archive",
-    "archive-type": "tar-gzip",
     "url": "https://static.crates.io/crates/winapi-util/winapi-util-0.1.11.crate",
     "sha256": "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22",
     "strip-components": 1,
