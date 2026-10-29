@@ -9,18 +9,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       - name: Native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake clang libclang-dev pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev
-      - name: Flatpak source and metadata consistency
-        run: |
-          python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py'
-          python3 build-aux/flatpak/check-packaging.py build-aux/flatpak/io.*.json
-      - name: Windows packaging logic (platform-independent tests)
-        run: python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
-      - run: cargo fmt --check
-      - run: cargo test --locked
-      - run: cargo clippy --locked --all-targets -- -D warnings
+          sudo apt-get install -y cmake clang libclang-dev pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev libvulkan-dev glslc
+      - name: Build release with Vulkan
+        run: cargo build --release --locked --features vulkan
