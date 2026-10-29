@@ -91,6 +91,7 @@ fn file(
     let mut pending = Vec::new();
     let mut processed = 0_usize;
     let window = SAMPLE_RATE * 28;
+    let overlap = SAMPLE_RATE * 2;
     send(tx, Event::Status("Transcribing audio file…".into()));
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -103,16 +104,29 @@ fn file(
         }
         while pending.len() >= window || (end && !pending.is_empty()) {
             let count = pending.len().min(window);
-            let segments = engine.transcribe(
-                &pending[..count],
-                offset + processed as u64 * 1000 / SAMPLE_RATE as u64,
-            )?;
+            let at = offset + processed as u64 * 1000 / SAMPLE_RATE as u64;
+            let last_window = end && pending.len() <= window;
+            let segments = engine.transcribe(&pending[..count], at)?;
+            // Adjacent windows share two seconds of audio. Assign segments by
+            // their midpoint to either side of the overlap's center, so shared
+            // audio supplies context without publishing both windows' copies.
+            let lower = if processed == 0 { offset } else { at + 1000 };
+            let upper =
+                at + (count - overlap.min(count)) as u64 * 1000 / SAMPLE_RATE as u64 + 1000;
+            let segments = segments
+                .into_iter()
+                .filter(|segment| {
+                    let midpoint = segment.start_ms + (segment.end_ms - segment.start_ms) / 2;
+                    midpoint >= lower && (last_window || midpoint < upper)
+                })
+                .collect();
             if cancel.load(Ordering::Relaxed) {
                 return Ok(());
             }
             send(tx, Event::Final(segments));
-            pending.drain(..count);
-            processed += count;
+            let advance = if last_window { count } else { count - overlap };
+            pending.drain(..advance);
+            processed += advance;
             if let Some(duration) = audio.duration_seconds.filter(|d| *d > 0.0) {
                 send(
                     tx,

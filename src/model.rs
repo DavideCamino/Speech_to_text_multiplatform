@@ -43,7 +43,7 @@ pub const CATALOG: &[Model] = &[
     Model {
         name: "Large V3 · multilingual · 2.9 GiB",
         file: "ggml-large-v3.bin",
-        bytes: 487_601_967,
+        bytes: 3_095_033_483,
         sha256: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
     },
 ];
