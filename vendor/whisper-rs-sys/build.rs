@@ -134,7 +134,7 @@ fn main() {
         .map_err(|v| v.to_string())
         .unwrap();
 
-        let bindings = bindgen::Builder::default()
+        let mut bindings = bindgen::Builder::default()
             .rust_edition(bindgen::RustEdition::Edition2021)
             .rust_target(package_msrv)
             .header("wrapper.h");
@@ -222,6 +222,22 @@ fn main() {
 
     if cfg!(feature = "vulkan") {
         config.define("GGML_VULKAN", "ON");
+        if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+            && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
+        {
+            // Use the MinGW shader compiler, not a potentially incompatible
+            // LunarG SDK executable. Locate it beside GCC in the active PATH
+            // so installations outside C:/msys64 are supported too.
+            println!("cargo:rerun-if-env-changed=PATH");
+            let glslc = env::var_os("PATH")
+                .and_then(|paths| {
+                    env::split_paths(&paths)
+                        .find(|dir| dir.join("gcc.exe").is_file() && dir.join("glslc.exe").is_file())
+                })
+                .expect("Install mingw-w64-ucrt-x86_64-shaderc and build in MSYS2 UCRT64")
+                .join("glslc.exe");
+            config.define("Vulkan_GLSLC_EXECUTABLE", glslc);
+        }
         if cfg!(windows) {
             println!("cargo:rerun-if-env-changed=VULKAN_SDK");
             println!("cargo:rustc-link-lib=vulkan-1");
