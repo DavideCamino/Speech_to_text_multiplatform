@@ -50,6 +50,14 @@ impl Engine {
         );
         params.set_language(self.language.as_deref());
         params.set_translate(false);
+        // Each pass re-decodes overlapping audio. Do not feed the previous
+        // pass's hypothesis back as a prompt (especially provisional speech).
+        params.set_no_context(true);
+        // Whisper's word-aware wrapping uses token timestamps, so the worker
+        // can reconcile words instead of accepting/rejecting entire sentences.
+        params.set_token_timestamps(true);
+        params.set_split_on_word(true);
+        params.set_max_len(1);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
@@ -71,10 +79,13 @@ impl Engine {
             let start = (segment.start_timestamp().max(0) as u64 * 10).min(duration_ms);
             let end = (segment.end_timestamp().max(0) as u64 * 10).min(duration_ms);
             let text = segment.to_str_lossy()?.trim().to_owned();
-            if end > start && !text.is_empty() {
+            if !text.is_empty() && duration_ms > 0 {
+                // Several short words can share a token timestamp. Preserve
+                // their text instead of dropping zero-duration word cues.
+                let start = start.min(duration_ms - 1);
                 result.push(Segment {
                     start_ms: offset_ms + start,
-                    end_ms: offset_ms + end,
+                    end_ms: offset_ms + end.max(start + 1),
                     text,
                 });
             }

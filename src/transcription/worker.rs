@@ -1,4 +1,7 @@
-use super::engine::Engine;
+use super::{
+    engine::Engine,
+    overlap::{OVERLAP_MS, Reconciler},
+};
 use crate::{
     audio::{AudioFile, Capture, Resampler, SAMPLE_RATE},
     settings::Settings,
@@ -87,11 +90,24 @@ fn file(
     tx: &SyncSender<Event>,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    file_windows(path, offset, tx, cancel, |samples, at| {
+        engine.transcribe(samples, at)
+    })
+}
+
+fn file_windows(
+    path: PathBuf,
+    offset: u64,
+    tx: &SyncSender<Event>,
+    cancel: &AtomicBool,
+    mut transcribe: impl FnMut(&[f32], u64) -> Result<Vec<Segment>>,
+) -> Result<()> {
     let mut audio = AudioFile::open(&path)?;
     let mut pending = Vec::new();
     let mut processed = 0_usize;
     let window = SAMPLE_RATE * 28;
-    let overlap = SAMPLE_RATE * 2;
+    let overlap = SAMPLE_RATE * OVERLAP_MS as usize / 1000;
+    let mut reconciler = Reconciler::default();
     send(tx, Event::Status("Transcribing audio file…".into()));
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -102,24 +118,15 @@ fn file(
         if let Some(samples) = packet {
             pending.extend(samples);
         }
-        while pending.len() >= window || (end && !pending.is_empty()) {
+        // One-packet lookahead distinguishes an exact-window EOF from a
+        // non-final window, avoiding a second recognition of only its overlap.
+        while pending.len() > window || (end && !pending.is_empty()) {
             let count = pending.len().min(window);
             let at = offset + processed as u64 * 1000 / SAMPLE_RATE as u64;
             let last_window = end && pending.len() <= window;
-            let segments = engine.transcribe(&pending[..count], at)?;
-            // Adjacent windows share two seconds of audio. Assign segments by
-            // their midpoint to either side of the overlap's center, so shared
-            // audio supplies context without publishing both windows' copies.
-            let lower = if processed == 0 { offset } else { at + 1000 };
-            let upper =
-                at + (count - overlap.min(count)) as u64 * 1000 / SAMPLE_RATE as u64 + 1000;
-            let segments = segments
-                .into_iter()
-                .filter(|segment| {
-                    let midpoint = segment.start_ms + (segment.end_ms - segment.start_ms) / 2;
-                    midpoint >= lower && (last_window || midpoint < upper)
-                })
-                .collect();
+            let words = transcribe(&pending[..count], at)?;
+            let until = at + count as u64 * 1000 / SAMPLE_RATE as u64;
+            let (segments, _) = reconciler.update(words, at, until, last_window);
             if cancel.load(Ordering::Relaxed) {
                 return Ok(());
             }
@@ -157,6 +164,7 @@ fn microphone(
     let mut last_inference = Instant::now();
     let started = Instant::now();
     let mut audio_flushed = false;
+    let mut reconciler = Reconciler::default();
     send(
         tx,
         Event::Status("Listening… provisional text may change".into()),
@@ -200,40 +208,24 @@ fn microphone(
         if (last_inference.elapsed() >= Duration::from_secs(3) && pending.len() >= SAMPLE_RATE)
             || (stopping && !pending.is_empty())
         {
-            // Keep a revisable tail. Only discard audio through a finalized segment boundary.
             let count = pending.len().min(SAMPLE_RATE * 28);
             let at = offset + consumed as u64 * 1000 / SAMPLE_RATE as u64;
-            let segments = engine.transcribe(&pending[..count], at)?;
+            let words = engine.transcribe(&pending[..count], at)?;
             if cancel.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            let duration_ms = count as u64 * 1000 / SAMPLE_RATE as u64;
-            let finalize_all = stopping || count >= SAMPLE_RATE * 28;
-            let cutoff = at + duration_ms.saturating_sub(2000);
-            let (stable, provisional): (Vec<_>, Vec<_>) = segments
-                .into_iter()
-                .partition(|s| finalize_all || (count >= SAMPLE_RATE * 8 && s.end_ms <= cutoff));
-            let committed = if finalize_all {
+            let until = at + count as u64 * 1000 / SAMPLE_RATE as u64;
+            // Stop may have more than one window queued. Only the actual last
+            // window is final; all earlier windows retain overlapping context.
+            let last = stopping && count == pending.len();
+            let (stable, provisional) = reconciler.update(words, at, until, last);
+            let committed = if last {
                 count
             } else {
-                stable
-                    .last()
-                    .map_or(0, |s| {
-                        ((s.end_ms - at) * SAMPLE_RATE as u64 / 1000) as usize
-                    })
-                    .min(count)
+                count.saturating_sub(SAMPLE_RATE * OVERLAP_MS as usize / 1000)
             };
             send(tx, Event::Final(stable));
-            send(
-                tx,
-                Event::Provisional(
-                    provisional
-                        .iter()
-                        .map(|s| s.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                ),
-            );
+            send(tx, Event::Provisional(provisional));
             pending.drain(..committed);
             consumed += committed;
             last_inference = Instant::now();
@@ -243,4 +235,93 @@ fn microphone(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transcript::Transcript;
+    use std::io::Write;
+
+    fn silence(milliseconds: u64) -> tempfile::NamedTempFile {
+        let mut file = tempfile::Builder::new().suffix(".wav").tempfile().unwrap();
+        let data = vec![0_u8; (milliseconds * SAMPLE_RATE as u64 / 1000 * 2) as usize];
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + data.len() as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16_u32.to_le_bytes()).unwrap();
+        file.write_all(&1_u16.to_le_bytes()).unwrap();
+        file.write_all(&1_u16.to_le_bytes()).unwrap();
+        file.write_all(&(SAMPLE_RATE as u32).to_le_bytes()).unwrap();
+        file.write_all(&(SAMPLE_RATE as u32 * 2).to_le_bytes())
+            .unwrap();
+        file.write_all(&2_u16.to_le_bytes()).unwrap();
+        file.write_all(&16_u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&(data.len() as u32).to_le_bytes()).unwrap();
+        file.write_all(&data).unwrap();
+        file.flush().unwrap();
+        file
+    }
+
+    #[test]
+    fn file_lookahead_and_overlap_preserve_all_words_including_exact_eof() {
+        for duration in [500, 28_000, 28_500, 52_000, 56_000] {
+            let audio = silence(duration);
+            let offset = 7_000;
+            let (tx, rx) = mpsc::sync_channel(128);
+            let mut calls = Vec::new();
+            file_windows(
+                audio.path().into(),
+                offset,
+                &tx,
+                &AtomicBool::new(false),
+                |samples, at| {
+                    calls.push(at);
+                    let end = at + samples.len() as u64 * 1000 / SAMPLE_RATE as u64;
+                    Ok((0..duration)
+                        .step_by(1000)
+                        .filter_map(|ms| {
+                            let start = offset + ms;
+                            (start >= at && start + 400 <= end).then(|| Segment {
+                                start_ms: start,
+                                end_ms: start + 400,
+                                text: format!("word{ms}"),
+                            })
+                        })
+                        .collect())
+                },
+            )
+            .unwrap();
+            let mut transcript = Transcript::default();
+            for event in rx.try_iter() {
+                if let Event::Final(segments) = event {
+                    transcript.append(segments);
+                }
+            }
+            let expected = (0..duration)
+                .step_by(1000)
+                .map(|ms| format!("word{ms}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(transcript.text(), expected, "duration {duration}");
+            assert_eq!(
+                calls.len(),
+                if duration <= 28_000 {
+                    1
+                } else if duration <= 52_000 {
+                    2
+                } else {
+                    3
+                }
+            );
+            assert!(
+                transcript
+                    .segments
+                    .windows(2)
+                    .all(|pair| pair[0].end_ms <= pair[1].start_ms)
+            );
+        }
+    }
 }

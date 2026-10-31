@@ -358,8 +358,8 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 
 ## Demo limitations / follow-up work
 
-- Whisper is chunk-based, not a native streaming recognizer. Live inference is scheduled roughly every three seconds after the previous pass; actual latency depends on hardware/model size. It retains a revisable tail and commits sufficiently old segment boundaries, with a 28-second forced window limit. Provisional words can change.
-- Files are processed in bounded 28-second windows. Hard boundaries can split words or lose context; timestamps are approximate. Better VAD/overlap handling and alignment are follow-up work, not professional subtitle guarantees.
+- Whisper is chunk-based, not a native streaming recognizer. Live inference is scheduled roughly every three seconds after the previous pass; actual latency depends on hardware/model size. File and live transcription use windows of at most 28 seconds, retain four seconds of overlapping audio, and keep a two-second revisable text tail. Stop flushes only the actual final window; provisional words can change.
+- Overlapping hypotheses are reconciled using word-level timestamps and time-constrained text alignment, then grouped into readable subtitle cues. If recognition disagrees entirely, a word-level timestamp seam is used instead. Timestamps remain approximate; alignment cannot guarantee perfect text at every boundary, particularly for languages without whitespace. VAD and professional subtitle alignment remain follow-up work.
 - Silence gating is deliberately conservative; noisy silence can still cause Whisper hallucinations.
 - Cancel takes effect between decoding/inference passes; it does **not** interrupt an in-flight native inference call or model load. Stop finishes buffered audio. Downloads are cancellation-polled even while waiting for network data.
 - Real-time capture requires inference to keep up. Its bounded callback queue may overflow on slow hardware; a clear error preserves completed text. Select Tiny or use a supported GPU build.

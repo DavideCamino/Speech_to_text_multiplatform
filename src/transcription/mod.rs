@@ -1,6 +1,7 @@
 //! All decoding, model loading, and inference run off the GTK main thread.
 mod engine;
 mod gpu;
+mod overlap;
 mod worker;
 pub use gpu::{GpuBackend, compiled_gpu_backends};
 pub use worker::{Event, Job, Source, start};
