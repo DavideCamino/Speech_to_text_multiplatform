@@ -1,5 +1,12 @@
 use crate::{settings::Settings, transcript::Segment};
 use anyhow::{Context, Result};
+use std::{
+    ffi::c_void,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
@@ -7,10 +14,18 @@ use whisper_rs::{
 pub struct Engine {
     state: WhisperState,
     language: Option<String>,
+    // Outlives state/backend teardown, including any retained native callback.
+    cancel: Arc<AtomicBool>,
+}
+
+unsafe extern "C" fn abort_inference(data: *mut c_void) -> bool {
+    // SAFETY: Engine owns the Arc until after WhisperState is dropped. Native
+    // inference only reads this atomic; no Rust references or state are mutated.
+    unsafe { &*data.cast::<AtomicBool>() }.load(Ordering::Relaxed)
 }
 
 impl Engine {
-    pub fn new(settings: &Settings) -> Result<Self> {
+    pub fn new(settings: &Settings, cancel: Arc<AtomicBool>) -> Result<Self> {
         // Native debug logs can include recognized words. Do not send private
         // transcript fragments to stderr (no logging backend is enabled).
         whisper_rs::install_logging_hooks();
@@ -31,11 +46,12 @@ impl Engine {
         Ok(Self {
             state: context.create_state()?,
             language: settings.language.clone(),
+            cancel,
         })
     }
 
     pub fn transcribe(&mut self, samples: &[f32], offset_ms: u64) -> Result<Vec<Segment>> {
-        if samples.is_empty() {
+        if self.cancel.load(Ordering::Relaxed) || samples.is_empty() {
             return Ok(Vec::new());
         }
         let duration_ms = samples.len() as u64 * 1000 / crate::audio::SAMPLE_RATE as u64;
@@ -45,6 +61,12 @@ impl Engine {
             return Ok(Vec::new());
         }
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        // Use a borrowed atomic, not a heap-allocated closure per pass. The
+        // native call is synchronous and Engine keeps the allocation alive.
+        unsafe {
+            params.set_abort_callback(Some(abort_inference));
+            params.set_abort_callback_user_data(Arc::as_ptr(&self.cancel).cast_mut().cast());
+        }
         params.set_n_threads(
             std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as i32,
         );
@@ -71,9 +93,13 @@ impl Engine {
         } else {
             samples
         };
-        self.state
-            .full(params, input)
-            .context("Whisper inference failed")?;
+        let inference = self.state.full(params, input);
+        if self.cancel.load(Ordering::Relaxed) {
+            // Aborted native calls may return an error or partial segments.
+            // Neither is publishable; cancellation is not an inference failure.
+            return Ok(Vec::new());
+        }
+        inference.context("Whisper inference failed")?;
         let mut result = Vec::new();
         for segment in self.state.as_iter() {
             let start = (segment.start_timestamp().max(0) as u64 * 10).min(duration_ms);
@@ -91,5 +117,55 @@ impl Engine {
             }
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abort_callback_reads_shared_cancel_flag() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let data = Arc::as_ptr(&cancel).cast_mut().cast();
+        // SAFETY: the Arc remains alive for both synchronous callback calls.
+        assert!(!unsafe { abort_inference(data) });
+        cancel.store(true, Ordering::Relaxed);
+        assert!(unsafe { abort_inference(data) });
+    }
+
+    #[test]
+    #[ignore = "requires SPEECH2TEXT_TEST_MODEL pointing to a local Whisper model"]
+    fn native_inference_can_be_cancelled() {
+        let model = std::env::var_os("SPEECH2TEXT_TEST_MODEL")
+            .expect("set SPEECH2TEXT_TEST_MODEL to a local model");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut engine = Engine::new(
+            &Settings {
+                model: Some(model.into()),
+                use_gpu: false,
+                language: Some("en".into()),
+                ..Settings::default()
+            },
+            cancel.clone(),
+        )
+        .unwrap();
+        let samples: Vec<_> = (0..crate::audio::SAMPLE_RATE * 28)
+            .map(|i| (i as f32 * 0.1).sin() * 0.2)
+            .collect();
+        let signal = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            signal.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let result = engine.transcribe(&samples, 0).unwrap();
+        canceller.join().unwrap();
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(
+            result.is_empty(),
+            "an aborted pass must not publish partial words"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 }

@@ -195,7 +195,9 @@ impl App {
                 job.stop.store(true, Ordering::Relaxed);
             }
             app.main.stop.set_sensitive(false);
-            app.main.status.set_text("Finishing buffered audio…");
+            app.main.status.set_text(
+                "Stopping recording… finishing buffered audio. Any model load must finish first.",
+            );
         });
         on_click(&self.main.cancel, self, |app| {
             if let Some(job) = app.job.borrow().as_ref() {
@@ -206,7 +208,12 @@ impl App {
             }
             app.main
                 .status
-                .set_text("Cancelling… waiting for the current operation to finish");
+                .set_text(if app.download.borrow().is_some() {
+                    "Cancelling model download…"
+                } else {
+                    "Cancelling… inference will abort; any model load must finish first."
+                });
+            app.main.stop.set_sensitive(false);
             app.main.cancel.set_sensitive(false);
         });
         on_click(&self.main.copy, self, |app| {
@@ -340,6 +347,12 @@ impl App {
         self.job.borrow().is_some() || self.download.borrow().is_some()
     }
 
+    fn job_stopping(&self) -> bool {
+        self.job.borrow().as_ref().is_some_and(|job| {
+            job.stop.load(Ordering::Relaxed) || job.cancel.load(Ordering::Relaxed)
+        })
+    }
+
     fn persist(&self) {
         if let Err(error) = self.settings.borrow().save() {
             self.main
@@ -424,8 +437,20 @@ impl App {
         self.preferences.device.set_sensitive(!busy);
         self.main.open.set_sensitive(!busy && has_model);
         self.main.record.set_sensitive(!busy && has_model);
-        self.main.stop.set_sensitive(self.recording.get());
-        self.main.cancel.set_sensitive(busy);
+        self.main
+            .stop
+            .set_sensitive(self.recording.get() && !self.job_stopping());
+        let cancelling = self
+            .job
+            .borrow()
+            .as_ref()
+            .is_some_and(|job| job.cancel.load(Ordering::Relaxed))
+            || self
+                .download
+                .borrow()
+                .as_ref()
+                .is_some_and(|job| job.cancel.load(Ordering::Relaxed));
+        self.main.cancel.set_sensitive(busy && !cancelling);
         for button in [&self.main.copy, &self.main.txt, &self.main.srt] {
             button.set_sensitive(has_text && !busy);
         }
@@ -638,7 +663,11 @@ impl App {
             .unwrap_or_default();
         for event in events {
             match event {
-                Event::Status(text) => self.main.status.set_text(&text),
+                Event::Status(text) => {
+                    if !self.job_stopping() {
+                        self.main.status.set_text(&text);
+                    }
+                }
                 Event::Progress(fraction) => self.main.progress.set_fraction(fraction),
                 Event::Final(segments) => {
                     if !segments.is_empty() {
@@ -652,6 +681,10 @@ impl App {
                     self.render_transcript();
                 }
                 Event::Meter { seconds, level } => {
+                    if self.job_stopping() {
+                        self.main.meter.set_value(0.0);
+                        continue;
+                    }
                     self.main.meter.set_value(level.clamp(0.0, 1.0));
                     self.main.status.set_text(&format!(
                         "Recording {:02}:{:02} · grey text is provisional",

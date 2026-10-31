@@ -57,11 +57,22 @@ pub fn start(source: Source, settings: Settings, offset_ms: u64) -> Job {
     std::thread::spawn(move || {
         // A panic must still unlock the interface, not leave it in a busy state.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-            send(&tx, Event::Status("Loading model…".into()));
-            let mut engine = Engine::new(&settings)?;
-            if cancel.load(Ordering::Relaxed) {
+            let stopped_before_capture =
+                || matches!(source, Source::Microphone) && stop.load(Ordering::Relaxed);
+            if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
                 return Ok(());
             }
+            send(
+                &tx,
+                Event::Status(
+                    "Loading model… cancellation waits for model loading to finish".into(),
+                ),
+            );
+            let engine = Engine::new(&settings, cancel.clone());
+            if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
+                return Ok(());
+            }
+            let mut engine = engine?;
             match source {
                 Source::File(path) => file(&mut engine, path, offset_ms, &tx, &cancel),
                 Source::Microphone => {
@@ -70,6 +81,7 @@ pub fn start(source: Source, settings: Settings, offset_ms: u64) -> Job {
             }
         }));
         let result = match outcome {
+            Ok(_) if cancel.load(Ordering::Relaxed) => Ok(()),
             Ok(result) => result.map_err(|e| format!("{e:#}")),
             Err(_) => Err("The transcription worker stopped unexpectedly".into()),
         };
@@ -154,16 +166,41 @@ fn microphone(
     settings: &Settings,
     offset: u64,
     tx: &SyncSender<Event>,
+    cancel: &Arc<AtomicBool>,
+    stop: &Arc<AtomicBool>,
+) -> Result<()> {
+    let capture = match Capture::start(settings.device.as_deref(), stop.clone(), cancel.clone()) {
+        Ok(capture) => capture,
+        Err(_) if cancel.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    microphone_capture(
+        capture,
+        offset,
+        tx,
+        cancel,
+        stop,
+        Duration::from_secs(3),
+        |samples, at| engine.transcribe(samples, at),
+    )
+}
+
+fn microphone_capture(
+    capture: Capture,
+    offset: u64,
+    tx: &SyncSender<Event>,
     cancel: &AtomicBool,
     stop: &AtomicBool,
+    inference_interval: Duration,
+    mut transcribe: impl FnMut(&[f32], u64) -> Result<Vec<Segment>>,
 ) -> Result<()> {
-    let capture = Capture::start(settings.device.as_deref())?;
     let mut resampler = Resampler::new(capture.rate);
     let mut pending = Vec::new();
     let mut consumed = 0_usize;
     let mut last_inference = Instant::now();
-    let started = Instant::now();
+    let mut captured_samples = 0_usize;
     let mut audio_flushed = false;
+    let mut capture_done = false;
     let mut reconciler = Reconciler::default();
     send(
         tx,
@@ -178,22 +215,44 @@ fn microphone(
                 "Microphone disconnected or inference could not keep up. Try a smaller model or GPU acceleration. Completed text has been kept."
             );
         }
-        let stopping = stop.load(Ordering::Relaxed);
-        if stopping && !audio_flushed {
-            capture.pause()?;
+        match capture.receiver.recv_timeout(Duration::from_millis(80)) {
+            Ok(samples) => {
+                captured_samples += samples.len();
+                pending.extend(resampler.push(&samples));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => capture_done = true,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        if let Ok(samples) = capture.receiver.recv_timeout(Duration::from_millis(80)) {
-            pending.extend(resampler.push(&samples));
-        }
-        // Drain all currently queued audio before Stop finalization.
-        while let Ok(samples) = capture.receiver.try_recv() {
-            pending.extend(resampler.push(&samples));
+        // A temporary empty queue is NOT Stop acknowledgement. Wait for sender
+        // disconnection so callbacks in flight cannot arrive after finalization.
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            match capture.receiver.try_recv() {
+                Ok(samples) => {
+                    captured_samples += samples.len();
+                    pending.extend(resampler.push(&samples));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    capture_done = true;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+            }
             if pending.len() > SAMPLE_RATE * 120 {
                 bail!(
                     "Transcription fell more than two minutes behind; completed text has been kept"
                 );
             }
         }
+        if pending.len() > SAMPLE_RATE * 120 {
+            bail!("Transcription fell more than two minutes behind; completed text has been kept");
+        }
+        if capture_done && !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+            bail!("Microphone stopped unexpectedly; completed text has been kept");
+        }
+        let stopping = capture_done;
         if stopping && !audio_flushed {
             pending.extend(resampler.finish());
             audio_flushed = true;
@@ -201,16 +260,16 @@ fn microphone(
         send(
             tx,
             Event::Meter {
-                seconds: started.elapsed().as_secs_f64(),
+                seconds: captured_samples as f64 / capture.rate as f64,
                 level: f32::from_bits(capture.level.load(Ordering::Relaxed)) as f64,
             },
         );
-        if (last_inference.elapsed() >= Duration::from_secs(3) && pending.len() >= SAMPLE_RATE)
+        if (last_inference.elapsed() >= inference_interval && pending.len() >= SAMPLE_RATE)
             || (stopping && !pending.is_empty())
         {
             let count = pending.len().min(SAMPLE_RATE * 28);
             let at = offset + consumed as u64 * 1000 / SAMPLE_RATE as u64;
-            let words = engine.transcribe(&pending[..count], at)?;
+            let words = transcribe(&pending[..count], at)?;
             if cancel.load(Ordering::Relaxed) {
                 return Ok(());
             }
@@ -242,6 +301,143 @@ mod tests {
     use super::*;
     use crate::transcript::Transcript;
     use std::io::Write;
+
+    fn hypothesis(samples: &[f32], at: u64) -> Vec<Segment> {
+        let end = at + samples.len() as u64 * 1000 / SAMPLE_RATE as u64;
+        (at.div_ceil(1000) * 1000..end)
+            .step_by(1000)
+            .map(|ms| Segment {
+                start_ms: ms,
+                end_ms: (ms + 400).min(end),
+                text: format!("word{}", ms / 1000),
+            })
+            .collect()
+    }
+
+    fn final_text(events: Receiver<Event>) -> String {
+        let mut transcript = Transcript::default();
+        for event in events.try_iter() {
+            if let Event::Final(segments) = event {
+                transcript.append(segments);
+            }
+        }
+        transcript.text()
+    }
+
+    #[test]
+    fn stop_closes_capture_during_inference_then_drains_teardown_tail() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
+        let capture = Capture::simulated(
+            vec![vec![0.1; SAMPLE_RATE * 8]],
+            vec![0.1; SAMPLE_RATE],
+            stop.clone(),
+            cancel.clone(),
+            closed_tx,
+        );
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(1);
+        let (tx, events) = mpsc::sync_channel(128);
+        let worker_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
+            let mut first = true;
+            microphone_capture(
+                capture,
+                0,
+                &tx,
+                &cancel,
+                &worker_stop,
+                Duration::ZERO,
+                |samples, at| {
+                    if first {
+                        first = false;
+                        entered_tx.send(()).unwrap();
+                        resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                    Ok(hypothesis(samples, at))
+                },
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        stop.store(true, Ordering::Relaxed);
+        // This must complete BEFORE inference is allowed to resume.
+        closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        resume_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(
+            final_text(events),
+            (0..9)
+                .map(|n| format!("word{n}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+
+    #[test]
+    fn cancel_during_inference_discards_partial_pass_but_keeps_finalized_text() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
+        let capture = Capture::simulated(
+            vec![vec![0.1; SAMPLE_RATE * 8]],
+            vec![],
+            stop.clone(),
+            cancel.clone(),
+            closed_tx,
+        );
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (tx, events) = mpsc::sync_channel(128);
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            let mut passes = 0;
+            microphone_capture(
+                capture,
+                0,
+                &tx,
+                &worker_cancel,
+                &stop,
+                Duration::ZERO,
+                |samples, at| {
+                    passes += 1;
+                    if passes == 2 {
+                        entered_tx.send(()).unwrap();
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        while !worker_cancel.load(Ordering::Relaxed) && Instant::now() < deadline {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        assert!(worker_cancel.load(Ordering::Relaxed));
+                    }
+                    Ok(hypothesis(samples, at))
+                },
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        cancel.store(true, Ordering::Relaxed);
+        closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(
+            final_text(events),
+            (0..6)
+                .map(|n| format!("word{n}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+
+    #[test]
+    fn dropping_capture_stops_owner_even_without_stop_or_cancel() {
+        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
+        let capture = Capture::simulated(
+            vec![],
+            vec![],
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            closed_tx,
+        );
+        drop(capture);
+        closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
 
     fn silence(milliseconds: u64) -> tempfile::NamedTempFile {
         let mut file = tempfile::Builder::new().suffix(".wav").tempfile().unwrap();

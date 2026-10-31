@@ -310,7 +310,7 @@ src/
     mod.rs               Controller: state, event polling, navigation, actions
 ```
 
-Workers receive settings snapshots and emit typed events. GTK objects never cross thread boundaries. The UI polls bounded event queues through GLib; file decoding, inference, audio resampling, and downloads do not run on the UI thread. Audio queue overflow or device errors stop the job with an explicit error instead of silently dropping speech. Original timed segments stay independent of the rewrite result, which is why rewritten subtitles are not offered.
+Workers receive settings snapshots and emit typed events. GTK objects never cross thread boundaries. The UI polls bounded event queues through GLib; file decoding, inference, audio resampling, and downloads do not run on the UI thread. A separate microphone owner watches Stop/Cancel independently of inference and tears down the stream; Stop waits for callback-channel disconnection before flushing buffered audio. Audio queue overflow or device errors stop the job with an explicit error instead of silently dropping speech. Original timed segments stay independent of the rewrite result, which is why rewritten subtitles are not offered.
 
 ## Tests and backend tools
 
@@ -361,7 +361,7 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - Whisper is chunk-based, not a native streaming recognizer. Live inference is scheduled roughly every three seconds after the previous pass; actual latency depends on hardware/model size. File and live transcription use windows of at most 28 seconds, retain four seconds of overlapping audio, and keep a two-second revisable text tail. Stop flushes only the actual final window; provisional words can change.
 - Overlapping hypotheses are reconciled using word-level timestamps and time-constrained text alignment, then grouped into readable subtitle cues. If recognition disagrees entirely, a word-level timestamp seam is used instead. Timestamps remain approximate; alignment cannot guarantee perfect text at every boundary, particularly for languages without whitespace. VAD and professional subtitle alignment remain follow-up work.
 - Silence gating is deliberately conservative; noisy silence can still cause Whisper hallucinations.
-- Cancel takes effect between decoding/inference passes; it does **not** interrupt an in-flight native inference call or model load. Stop finishes buffered audio. Downloads are cancellation-polled even while waiting for network data.
+- Cancel uses Whisper's native abort callback to interrupt inference at backend computation checkpoints, discards unfinished text/audio, and preserves finalized text. It cannot interrupt model loading (or an individual backend operation); cancellation is checked before and after loading. Stop signals microphone teardown independently of inference, then finishes all buffered audio. Downloads are cancellation-polled even while waiting for network data.
 - Real-time capture requires inference to keep up. Its bounded callback queue may overflow on slow hardware; a clear error preserves completed text. Select Tiny or use a supported GPU build.
 - Device names are enumerated at startup; there is no hot-plug refresh UI yet. Some unusual input sample formats are not supported.
 - File progress is updated at inference-window boundaries; it can remain unchanged while a model loads or the first window runs.
