@@ -3,15 +3,61 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  linux:
+  packaging:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Test Flatpak packaging
+        run: python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py' -v
+      - name: Test Windows packaging
+        run: python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
+      - name: Check Flatpak locked sources and identity
+        run: python3 build-aux/flatpak/check-packaging.py build-aux/flatpak/io.github.davidecamino.Speech2Text.json
+
+  linux:
+    name: Linux (${{ matrix.backend }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: CPU
+            features: ''
+          - backend: Vulkan
+            features: vulkan
+    env:
+      CARGO_FEATURES: ${{ matrix.features }}
+      GDK_BACKEND: x11
+      GTK_A11Y: none
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Native dependencies
+        with:
+          components: rustfmt, clippy
+      - name: Native dependencies and virtual display
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake clang libclang-dev pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev libvulkan-dev glslc
-      - name: Build release with Vulkan
-        run: cargo build --release --locked --features vulkan
+          sudo apt-get install -y cmake clang libclang-dev pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev libvulkan-dev glslc xvfb xauth dbus-x11
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --features "$CARGO_FEATURES" -- -D warnings
+      - name: Test with a virtual display and session bus
+        run: |
+          xvfb-run -a dbus-run-session -- cargo test --locked --all-targets --features "$CARGO_FEATURES" -- --nocapture 2>&1 | tee test-output.log
+          # The GTK test otherwise treats display initialization failure as a
+          # successful skip. Do not allow that to hide regressions in CI.
+          if grep -Fq 'Skipping GTK surface test' test-output.log; then
+            echo 'GTK surface test was skipped despite the virtual display.' >&2
+            exit 1
+          fi
+      - name: Build release
+        run: cargo build --release --locked --features "$CARGO_FEATURES"
