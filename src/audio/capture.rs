@@ -14,10 +14,11 @@ use std::{
 };
 
 pub fn input_devices() -> Result<Vec<String>> {
-    Ok(cpal::default_host()
-        .input_devices()?
-        .filter_map(|d| d.name().ok())
-        .collect())
+    cpal::default_host()
+        .input_devices()
+        .context("Cannot enumerate microphone devices")?
+        .map(|device| device.name().context("Cannot read microphone name"))
+        .collect()
 }
 
 #[derive(Clone)]

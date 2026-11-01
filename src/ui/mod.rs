@@ -43,6 +43,18 @@ impl Drop for DownloadJob {
     }
 }
 
+type DeviceDiscovery = Receiver<Result<Vec<String>, String>>;
+
+fn discover_devices(
+    discover: impl FnOnce() -> Result<Vec<String>, String> + Send + 'static,
+) -> DeviceDiscovery {
+    let (tx, events) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(discover());
+    });
+    events
+}
+
 struct App {
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
@@ -55,6 +67,7 @@ struct App {
     provisional: RefCell<String>,
     job: RefCell<Option<Job>>,
     download: RefCell<Option<DownloadJob>>,
+    device_discovery: RefCell<Option<DeviceDiscovery>>,
     recording: Cell<bool>,
     dirty: Cell<bool>,
     rewrite_dirty: Cell<bool>,
@@ -115,12 +128,14 @@ pub fn build(application: &adw::Application) {
         provisional: RefCell::default(),
         job: RefCell::default(),
         download: RefCell::default(),
+        device_discovery: RefCell::default(),
         recording: Cell::new(false),
         dirty: Cell::new(false),
         rewrite_dirty: Cell::new(false),
         allow_close: Cell::new(false),
     });
     app.connect();
+    app.refresh_devices();
     app.update_model_label();
     app.refresh();
     app.window.present();
@@ -158,6 +173,15 @@ fn on_click(button: &gtk::Button, app: &Rc<App>, action: impl Fn(Rc<App>) + 'sta
 impl App {
     fn connect(self: &Rc<Self>) {
         self.connect_menu();
+        on_click(&self.preferences.device_refresh, self, |app| {
+            app.refresh_devices()
+        });
+        let weak = Rc::downgrade(self);
+        self.preferences.device.connect_selected_notify(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.preferences.update_device_status();
+            }
+        });
         let weak = Rc::downgrade(self);
         self.preferences.window.connect_close_request(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -387,14 +411,19 @@ impl App {
                         .get(index as usize)
                         .copied()
                 });
-            settings.device = self
-                .preferences
-                .device
-                .selected()
-                .checked_sub(1)
-                .and_then(|index| self.preferences.devices.get(index as usize).cloned());
+            settings.device = self.preferences.selected_device();
         }
         self.persist();
+    }
+
+    fn refresh_devices(&self) {
+        if self.busy() || self.device_discovery.borrow().is_some() {
+            return;
+        }
+        self.preferences.begin_device_refresh();
+        *self.device_discovery.borrow_mut() = Some(discover_devices(|| {
+            crate::audio::input_devices().map_err(|error| format!("{error:#}"))
+        }));
     }
 
     fn update_model_label(&self) {
@@ -440,7 +469,7 @@ impl App {
             .gpu
             .set_sensitive(!busy && transcription::gpu_available_in_build());
         self.preferences.language.set_sensitive(!busy);
-        self.preferences.device.set_sensitive(!busy);
+        self.preferences.refresh_device_controls(busy);
         self.main.open.set_sensitive(!busy && has_model);
         self.main.record.set_sensitive(!busy && has_model);
         self.main
@@ -657,6 +686,22 @@ impl App {
     }
 
     fn poll(&self) {
+        let devices =
+            self.device_discovery
+                .borrow()
+                .as_ref()
+                .and_then(|events| match events.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                        "Microphone discovery worker stopped unexpectedly".into(),
+                    )),
+                });
+        if let Some(result) = devices {
+            self.device_discovery.borrow_mut().take();
+            self.preferences.finish_device_refresh(result);
+            self.refresh();
+        }
         let events: Vec<_> = self
             .job
             .borrow()

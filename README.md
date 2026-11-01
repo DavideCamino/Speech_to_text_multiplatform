@@ -5,7 +5,7 @@ A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.c
 ## Current features
 
 - Transcribe a selected **WAV, MP3, FLAC, OGG/Vorbis, or M4A (AAC/ALAC)** file.
-- Microphone transcription with an input selector, level indicator, duration, Stop, and Cancel.
+- Microphone transcription with an input selector, background device discovery, manual Refresh, visible discovery errors, level indicator, duration, Stop, and Cancel. Unavailable saved inputs remain selected until you choose another input.
 - Finalized text uses the theme's normal foreground; revisable live text is grey.
 - Read-only transcript, clipboard copy, UTF-8 TXT, and segment-timed SRT export.
 - Select a local whisper.cpp **ggml `.bin` model**, or explicitly download multilingual Tiny, Base, or Small models. Downloads show progress, support cancellation, and verify pinned SHA-256 checksums before selecting the model.
@@ -363,7 +363,7 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - Silence gating is deliberately conservative; noisy silence can still cause Whisper hallucinations.
 - Cancel uses Whisper's native abort callback to interrupt inference at backend computation checkpoints, discards unfinished text/audio, and preserves finalized text. It cannot interrupt model loading (or an individual backend operation); cancellation is checked before and after loading. Stop signals microphone teardown independently of inference, then finishes all buffered audio. Downloads are cancellation-polled even while waiting for network data.
 - Real-time capture requires inference to keep up. Its bounded callback queue may overflow on slow hardware; a clear error preserves completed text. Select Tiny or use a supported GPU build.
-- Device names are enumerated at startup; there is no hot-plug refresh UI yet. Some unusual input sample formats are not supported.
+- Device names are discovered on a background thread at startup. Use Settings → Audio input → Refresh after connecting/disconnecting a microphone; automatic hot-plug monitoring is not implemented. Some unusual input sample formats are not supported.
 - File progress is updated at inference-window boundaries; it can remain unchanged while a model loads or the first window runs.
 - No model download resume, transcript history, automatic audio saving, translation, speaker diarization, LLM, Flathub publication/automatic app updates, or macOS installer integration yet. Windows installers are unsigned; automatic updates are not implemented.
 

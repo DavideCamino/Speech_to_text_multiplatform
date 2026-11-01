@@ -2,6 +2,7 @@
 use crate::settings::Settings;
 use adw::prelude::*;
 use gtk::Align;
+use std::cell::{Cell, RefCell};
 
 pub struct Preferences {
     pub window: adw::PreferencesWindow,
@@ -14,7 +15,12 @@ pub struct Preferences {
     pub gpu_backend: gtk::DropDown,
     pub language: gtk::Entry,
     pub device: gtk::DropDown,
-    pub devices: Vec<String>,
+    pub device_refresh: gtk::Button,
+    pub device_row: adw::ActionRow,
+    devices: RefCell<Vec<String>>,
+    device_loading: Cell<bool>,
+    device_unavailable: Cell<Option<u32>>,
+    device_error: RefCell<Option<String>>,
 }
 
 impl Preferences {
@@ -139,19 +145,28 @@ impl Preferences {
             .build();
         language_row.add_suffix(&language);
         config.add(&language_row);
-        let devices = crate::audio::input_devices().unwrap_or_default();
-        let mut names = vec!["Default microphone"];
-        names.extend(devices.iter().map(String::as_str));
-        let device = gtk::DropDown::from_strings(&names);
+        // Preserve the saved name before discovery completes. Constructing
+        // widgets must never open/enumerate native audio devices on GTK's thread.
+        let devices: Vec<String> = settings.device.iter().cloned().collect();
+        let mut names = vec!["Default microphone".to_owned()];
+        names.extend(
+            devices
+                .iter()
+                .map(|name| format!("{name} (not yet discovered)")),
+        );
+        let device =
+            gtk::DropDown::from_strings(&names.iter().map(String::as_str).collect::<Vec<_>>());
         device.set_valign(Align::Center);
-        if let Some(index) = devices
-            .iter()
-            .position(|d| Some(d) == settings.device.as_ref())
-        {
-            device.set_selected(index as u32 + 1);
-        }
-        let device_row = adw::ActionRow::builder().title("Audio input").build();
+        device.set_selected(if devices.is_empty() { 0 } else { 1 });
+        let device_refresh = gtk::Button::with_label("Refresh");
+        device_refresh.set_valign(Align::Center);
+        let device_row = adw::ActionRow::builder()
+            .title("Audio input")
+            .use_markup(false)
+            .subtitle("Microphones have not been discovered yet")
+            .build();
         device_row.add_suffix(&device);
+        device_row.add_suffix(&device_refresh);
         config.add(&device_row);
         stt.add(&config);
         window.add(&stt);
@@ -173,7 +188,98 @@ impl Preferences {
             gpu_backend,
             language,
             device,
-            devices,
+            device_refresh,
+            device_row,
+            devices: RefCell::new(devices),
+            device_loading: Cell::new(false),
+            device_unavailable: Cell::new(settings.device.as_ref().map(|_| 1)),
+            device_error: RefCell::new(None),
+        }
+    }
+
+    pub fn selected_device(&self) -> Option<String> {
+        self.device
+            .selected()
+            .checked_sub(1)
+            .and_then(|index| self.devices.borrow().get(index as usize).cloned())
+    }
+
+    pub fn devices_loading(&self) -> bool {
+        self.device_loading.get()
+    }
+
+    pub fn refresh_device_controls(&self, busy: bool) {
+        let enabled = !busy && !self.devices_loading();
+        self.device.set_sensitive(enabled);
+        self.device_refresh.set_sensitive(enabled);
+    }
+
+    pub fn begin_device_refresh(&self) {
+        self.device_loading.set(true);
+        self.refresh_device_controls(false);
+        self.update_device_status();
+    }
+
+    pub fn finish_device_refresh(&self, result: Result<Vec<String>, String>) {
+        let selected = self.selected_device();
+        match result {
+            Ok(mut devices) => {
+                // Multiple devices may expose the same name; name-based capture
+                // cannot distinguish them, so do not offer duplicate choices.
+                let mut seen = std::collections::HashSet::new();
+                devices.retain(|name| seen.insert(name.clone()));
+                let missing = selected.as_ref().filter(|name| !devices.contains(name));
+                let unavailable = missing.map(|name| {
+                    devices.push(name.clone());
+                    devices.len() as u32
+                });
+                let mut labels = vec!["Default microphone".to_owned()];
+                labels.extend(devices.iter().enumerate().map(|(index, name)| {
+                    if unavailable == Some(index as u32 + 1) {
+                        format!("{name} (unavailable)")
+                    } else {
+                        name.clone()
+                    }
+                }));
+                let index = selected
+                    .as_ref()
+                    .and_then(|name| devices.iter().position(|d| d == name))
+                    .map_or(0, |index| index as u32 + 1);
+                *self.devices.borrow_mut() = devices;
+                self.device_unavailable.set(unavailable);
+                self.device_error.borrow_mut().take();
+                self.device.set_model(Some(&gtk::StringList::new(
+                    &labels.iter().map(String::as_str).collect::<Vec<_>>(),
+                )));
+                self.device.set_selected(index);
+            }
+            Err(error) => {
+                // Keep the existing choices and selection on failure. An error
+                // is not evidence that a previously selected device vanished.
+                *self.device_error.borrow_mut() = Some(error);
+            }
+        }
+        self.device_loading.set(false);
+        self.update_device_status();
+    }
+
+    pub fn update_device_status(&self) {
+        if self.device_loading.get() {
+            self.device_row.set_subtitle("Loading microphones…");
+        } else if let Some(error) = self.device_error.borrow().as_ref() {
+            self.device_row.set_subtitle(&format!(
+                "Could not discover microphones: {error}. Use Refresh to retry."
+            ));
+        } else if self.device_unavailable.get() == Some(self.device.selected()) {
+            self.device_row.set_subtitle("Selected microphone is unavailable. Reconnect it and refresh, or choose another input.");
+        } else if self.devices.borrow().len()
+            == usize::from(self.device_unavailable.get().is_some())
+        {
+            self.device_row
+                .set_subtitle("No microphones found. Connect a microphone and refresh.");
+        } else {
+            self.device_row
+                .set_subtitle("Use Refresh to update connected microphones.");
         }
     }
 }
