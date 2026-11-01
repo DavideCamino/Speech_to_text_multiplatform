@@ -8,7 +8,7 @@ A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.c
 - Microphone transcription with an input selector, background device discovery, manual Refresh, visible discovery errors, level indicator, duration, Stop, and Cancel. Unavailable saved inputs remain selected until you choose another input.
 - Finalized text uses the theme's normal foreground; revisable live text is grey.
 - Read-only transcript, clipboard copy, UTF-8 TXT, and segment-timed SRT export.
-- Select a local whisper.cpp **ggml `.bin` model**, or explicitly download multilingual Tiny, Base, or Small models. Downloads show progress, support cancellation, and verify pinned SHA-256 checksums before selecting the model.
+- A single **Local Whisper model** button in Settings shows the selected model's filename. It opens a library listing `.bin` models in the application's default model folder. Download multilingual Tiny, Base, Small, Medium, or Large V3 from the built-in catalog, or select a model in another folder and choose **Use Original** or **Copy to Model Folder**. Downloads verify pinned SHA-256 checksums; downloads and copies show progress and support cancellation. Copies preserve the source and never overwrite existing models.
 - Automatic language detection or a manual Whisper language code (`en`, `it`, `fr`, etc.). Transcription preserves the spoken language; translation is disabled.
 - GPU-enabled builds for Vulkan, CUDA, Metal, or **AMD ROCm (HIP/hipBLAS)**, with a runtime switch to CPU mode and a saved backend selector.
 - A three-dot header menu with **Settings**, **Keyboard Shortcuts**, and **About Speech2Text**. Settings has a **Speech to Text** page for model/audio options and an empty **LLM** page reserved for future integration.
@@ -39,7 +39,7 @@ cargo run
 
 On Arch Linux the corresponding packages include `base-devel`, `cmake`, `clang`, `pkgconf`, `gtk4`, `libadwaita`, and `alsa-lib`.
 
-Open **⋮ → Settings → Speech to Text** and **select/download a model first**, then open an audio file or start recording. Settings are saved when its window closes. Base is a useful starting point; Tiny is faster for live transcription. The Hugging Face download confirmation states the approximate size and destination. No model is bundled with the source.
+Open **⋮ → Settings → Speech to Text → Local Whisper model** (the button initially says **No model selected**). Click an installed model to select it, use **Download…** to choose a catalog model, or **Select Local Model…** to browse another folder. External selections offer to copy into the displayed model folder or use the original location without copying. Model selection is saved immediately; other settings are saved when Settings closes. Base is a useful starting point; Tiny is faster for live transcription. No model is bundled with the source.
 
 Use a release build for meaningful performance measurements:
 

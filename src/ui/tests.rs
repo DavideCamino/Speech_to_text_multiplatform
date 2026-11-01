@@ -12,6 +12,7 @@ fn settings_pages_and_menu_surfaces_build() {
     incremental_transcript_updates();
     let parent = adw::ApplicationWindow::builder().build();
     device_discovery_states(&parent);
+    model_library_window(&parent);
     let compiled = transcription::compiled_gpu_backends();
     let settings = Settings {
         gpu_backend: compiled.last().copied(),
@@ -54,6 +55,60 @@ fn settings_pages_and_menu_surfaces_build() {
             window.destroy();
         }
     }
+}
+
+fn model_library_window(parent: &adw::ApplicationWindow) {
+    let selected = PathBuf::from("models").join("ggml-tiny.bin");
+    let preferences = preferences::Preferences::new(
+        parent,
+        &Settings {
+            model: Some(selected.clone()),
+            ..Settings::default()
+        },
+    );
+    assert_eq!(preferences.model_label.text(), "ggml-tiny.bin");
+    assert_eq!(
+        preferences.select_model.child(),
+        Some(preferences.model_label.clone().upcast())
+    );
+    let models = models::Models::new(&preferences.window);
+    assert_eq!(models.download.label().as_deref(), Some("Download…"));
+    assert_eq!(
+        models.browse.label().as_deref(),
+        Some("Select Local Model…")
+    );
+    let other = PathBuf::from("models").join("ggml-small.bin");
+    let chosen = Rc::new(RefCell::new(None));
+    let observed = chosen.clone();
+    models.set_entries(
+        vec![selected.clone(), other.clone()],
+        Some(&selected),
+        move |path| {
+            *observed.borrow_mut() = Some(path);
+        },
+    );
+    let first = models
+        .list
+        .row_at_index(0)
+        .unwrap()
+        .child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    assert!(first.has_css_class("suggested-action"));
+    let second = models
+        .list
+        .row_at_index(1)
+        .unwrap()
+        .child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    second.emit_clicked();
+    assert_eq!(*chosen.borrow(), Some(other));
+    assert!(models.list.row_at_index(2).is_none());
+    models.set_entries(vec![], None, |_| {});
+    assert!(models.list.row_at_index(0).is_none());
 }
 
 #[test]

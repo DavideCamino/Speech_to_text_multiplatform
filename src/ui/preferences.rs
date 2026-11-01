@@ -8,9 +8,6 @@ pub struct Preferences {
     pub window: adw::PreferencesWindow,
     pub model_label: gtk::Label,
     pub select_model: gtk::Button,
-    pub catalog: gtk::DropDown,
-    pub download: gtk::Button,
-    pub progress: gtk::ProgressBar,
     pub gpu: gtk::Switch,
     pub gpu_backend: gtk::DropDown,
     pub language: gtk::Entry,
@@ -43,41 +40,24 @@ impl Preferences {
         let config = adw::PreferencesGroup::builder()
             .title("Recognition")
             .build();
+        let model_name = settings
+            .model
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "No model selected".into());
         let model_label = gtk::Label::builder()
-            .label("No model selected")
+            .label(&model_name)
             .ellipsize(gtk::pango::EllipsizeMode::Middle)
             .max_width_chars(24)
             .build();
-        let select_model = gtk::Button::with_label("Select Model…");
+        let select_model = gtk::Button::builder().child(&model_label).build();
         select_model.set_valign(Align::Center);
         let model_row = adw::ActionRow::builder()
             .title("Local Whisper model")
             .build();
-        model_row.add_suffix(&model_label);
         model_row.add_suffix(&select_model);
         config.add(&model_row);
-        let catalog = gtk::DropDown::from_strings(
-            &crate::model::CATALOG
-                .iter()
-                .map(|m| m.name)
-                .collect::<Vec<_>>(),
-        );
-        catalog.set_selected(1);
-        catalog.set_valign(Align::Center);
-        let download = gtk::Button::with_label("Download");
-        download.set_valign(Align::Center);
-        download.set_tooltip_text(Some(
-            "Downloads from Hugging Face after confirmation; verifies SHA-256",
-        ));
-        let download_row = adw::ActionRow::builder().title("Download a model").build();
-        download_row.add_suffix(&catalog);
-        download_row.add_suffix(&download);
-        config.add(&download_row);
-        let progress = gtk::ProgressBar::builder()
-            .visible(false)
-            .show_text(true)
-            .build();
-        config.add(&progress);
         let gpu = gtk::Switch::builder()
             .active(settings.use_gpu && crate::transcription::gpu_available_in_build())
             .sensitive(crate::transcription::gpu_available_in_build())
@@ -181,9 +161,6 @@ impl Preferences {
             window,
             model_label,
             select_model,
-            catalog,
-            download,
-            progress,
             gpu,
             gpu_backend,
             language,

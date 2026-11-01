@@ -68,6 +68,102 @@ fn worker_reports_model_errors_and_always_finishes() {
 }
 
 #[test]
+fn model_library_lists_only_bin_files_and_handles_a_missing_folder() {
+    use speech2text::model;
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("models");
+    assert!(model::installed(&directory).unwrap().is_empty());
+    assert!(!directory.exists());
+    std::fs::create_dir(&directory).unwrap();
+    for name in ["z.bin", "A.BIN", "notes.txt", ".import.part"] {
+        std::fs::write(directory.join(name), b"test").unwrap();
+    }
+    std::fs::create_dir(directory.join("folder.bin")).unwrap();
+    assert_eq!(
+        model::installed(&directory).unwrap(),
+        vec![directory.join("A.BIN"), directory.join("z.bin")]
+    );
+}
+
+#[test]
+fn import_copies_a_model_without_moving_the_original() {
+    use speech2text::model;
+    use std::sync::atomic::AtomicBool;
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("ggml-☕.bin");
+    let directory = root.path().join("models");
+    let bytes = vec![42_u8; 150_000];
+    std::fs::write(&source, &bytes).unwrap();
+    let mut progress = Vec::new();
+    let target = model::import(&source, &directory, &AtomicBool::new(false), |fraction| {
+        progress.push(fraction)
+    })
+    .unwrap();
+    assert_eq!(target, directory.join(source.file_name().unwrap()));
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    assert_eq!(model::installed(&directory).unwrap(), vec![target]);
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    assert_eq!(progress.last(), Some(&1.0));
+    assert!(progress.windows(2).all(|pair| pair[0] <= pair[1]));
+}
+
+#[test]
+fn import_never_overwrites_an_existing_model() {
+    use speech2text::model;
+    use std::sync::atomic::AtomicBool;
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("model.bin");
+    let directory = root.path().join("models");
+    std::fs::create_dir(&directory).unwrap();
+    let target = directory.join("model.bin");
+    std::fs::write(&source, b"replacement").unwrap();
+    std::fs::write(&target, b"existing").unwrap();
+    assert!(model::import(&source, &directory, &AtomicBool::new(false), |_| {}).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+    assert_eq!(std::fs::read(&source).unwrap(), b"replacement");
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+}
+
+#[test]
+fn cancelled_import_cleans_up_partial_files() {
+    use speech2text::model;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("model.bin");
+    let directory = root.path().join("models");
+    let bytes = vec![7_u8; 150_000];
+    std::fs::write(&source, &bytes).unwrap();
+    let cancel = AtomicBool::new(true);
+    assert!(model::import(&source, &directory, &cancel, |_| {}).is_err());
+    assert!(!directory.exists());
+    cancel.store(false, Ordering::Relaxed);
+    let result = model::import(&source, &directory, &cancel, |_| {
+        cancel.store(true, Ordering::Relaxed)
+    });
+    assert!(result.unwrap_err().to_string().contains("cancelled"));
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+}
+
+#[test]
+fn import_collision_during_copy_does_not_overwrite_the_destination() {
+    use speech2text::model;
+    use std::sync::atomic::AtomicBool;
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("model.bin");
+    let directory = root.path().join("models");
+    std::fs::write(&source, b"source").unwrap();
+    let target = directory.join("model.bin");
+    let result = model::import(&source, &directory, &AtomicBool::new(false), |_| {
+        std::fs::write(&target, b"other writer").unwrap();
+    });
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"other writer");
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+}
+
+#[test]
 fn already_cancelled_download_does_not_publish_a_model() {
     use std::sync::atomic::AtomicBool;
     let dir = tempfile::tempdir().unwrap();

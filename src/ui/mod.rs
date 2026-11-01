@@ -2,6 +2,7 @@
 //! no widget is ever sent to an audio, network, or inference thread.
 mod dialogs;
 mod menu;
+mod models;
 mod preferences;
 mod transcript_buffer;
 mod views;
@@ -33,17 +34,23 @@ enum DownloadEvent {
     Progress(f64),
     Finished(Result<PathBuf, String>),
 }
-struct DownloadJob {
+enum ModelTask {
+    Download(usize),
+    Copy(PathBuf),
+}
+struct ModelJob {
     events: Receiver<DownloadEvent>,
     cancel: Arc<AtomicBool>,
+    copying: bool,
 }
-impl Drop for DownloadJob {
+impl Drop for ModelJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
 type DeviceDiscovery = Receiver<Result<Vec<String>, String>>;
+type ModelScan = Receiver<Result<Vec<PathBuf>, String>>;
 
 fn discover_devices(
     discover: impl FnOnce() -> Result<Vec<String>, String> + Send + 'static,
@@ -60,13 +67,15 @@ struct App {
     stack: gtk::Stack,
     main: MainView,
     preferences: preferences::Preferences,
+    models: models::Models,
+    model_scan: RefCell<Option<ModelScan>>,
     rewrite: RewriteView,
     settings: RefCell<Settings>,
     transcript: RefCell<Transcript>,
     transcript_buffer: RefCell<transcript_buffer::TranscriptBuffer>,
     provisional: RefCell<String>,
     job: RefCell<Option<Job>>,
-    download: RefCell<Option<DownloadJob>>,
+    download: RefCell<Option<ModelJob>>,
     device_discovery: RefCell<Option<DeviceDiscovery>>,
     recording: Cell<bool>,
     dirty: Cell<bool>,
@@ -109,8 +118,9 @@ pub fn build(application: &adw::Application) {
         .content(&toolbar)
         .build();
     let preferences = preferences::Preferences::new(&window, &settings);
+    let models = models::Models::new(&preferences.window);
     main.progress
-        .bind_property("fraction", &preferences.progress, "fraction")
+        .bind_property("fraction", &models.progress, "fraction")
         .sync_create()
         .build();
     let transcript_buffer = RefCell::new(transcript_buffer::TranscriptBuffer::new(
@@ -121,6 +131,8 @@ pub fn build(application: &adw::Application) {
         stack,
         main,
         preferences,
+        models,
+        model_scan: RefCell::default(),
         rewrite,
         settings: RefCell::new(settings),
         transcript: RefCell::default(),
@@ -190,21 +202,23 @@ impl App {
             gtk::glib::Propagation::Proceed
         });
         on_click(&self.preferences.select_model, self, |app| {
+            app.models.window.present();
+            app.refresh_models();
+        });
+        on_click(&self.models.browse, self, |app| {
             let weak = Rc::downgrade(&app);
-            dialogs::open(&app.preferences.window, true, move |path| {
+            dialogs::open(&app.models.window, true, move |path| {
                 if let Some(app) = weak.upgrade() {
-                    app.settings.borrow_mut().model = Some(path);
-                    app.persist();
-                    app.update_model_label();
-                    app.refresh();
+                    app.ask_import(path);
                 }
             });
         });
-        on_click(&self.preferences.download, self, |app| {
+        on_click(&self.models.download, self, |app| {
             if let Some(job) = app.download.borrow().as_ref() {
                 job.cancel.store(true, Ordering::Relaxed);
-                app.preferences.download.set_sensitive(false);
-                app.main.status.set_text("Cancelling model download…");
+                app.models.download.set_sensitive(false);
+                app.main.status.set_text("Cancelling model operation…");
+                app.models.status.set_text("Cancelling model operation…");
             } else {
                 app.ask_download();
             }
@@ -239,7 +253,7 @@ impl App {
             app.main
                 .status
                 .set_text(if app.download.borrow().is_some() {
-                    "Cancelling model download…"
+                    "Cancelling model operation…"
                 } else {
                     "Cancelling… inference will abort; any model load must finish first."
                 });
@@ -366,7 +380,9 @@ impl App {
     }
 
     fn dialog_parent(&self) -> gtk::Window {
-        if self.preferences.window.is_visible() {
+        if self.models.window.is_visible() {
+            self.models.window.clone().upcast()
+        } else if self.preferences.window.is_visible() {
             self.preferences.window.clone().upcast()
         } else {
             self.window.clone().upcast()
@@ -435,7 +451,7 @@ impl App {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "No model selected".into());
         self.preferences.model_label.set_text(&text);
-        self.preferences.model_label.set_tooltip_text(
+        self.preferences.select_model.set_tooltip_text(
             settings
                 .model
                 .as_ref()
@@ -454,17 +470,36 @@ impl App {
             .is_some_and(|p| p.is_file());
         let has_text = !self.transcript.borrow().segments.is_empty();
         let downloading = self.download.borrow().is_some();
-        self.preferences.select_model.set_sensitive(!busy);
         self.preferences
+            .select_model
+            .set_sensitive(self.job.borrow().is_none());
+        let cancelling = self
             .download
-            .set_sensitive(!busy || downloading);
-        self.preferences.download.set_label(if downloading {
-            "Cancel Download"
+            .borrow()
+            .as_ref()
+            .is_some_and(|job| job.cancel.load(Ordering::Relaxed));
+        self.models
+            .download
+            .set_sensitive((!busy || downloading) && !cancelling);
+        self.models.download.set_label(if downloading {
+            if self
+                .download
+                .borrow()
+                .as_ref()
+                .is_some_and(|job| job.copying)
+            {
+                "Cancel Copy"
+            } else {
+                "Cancel Download"
+            }
         } else {
-            "Download"
+            "Download…"
         });
-        self.preferences.progress.set_visible(downloading);
-        self.preferences.catalog.set_sensitive(!busy);
+        self.models.progress.set_visible(downloading);
+        self.models.browse.set_sensitive(!busy);
+        self.models
+            .list
+            .set_sensitive(!busy && self.model_scan.borrow().is_none());
         self.preferences
             .gpu
             .set_sensitive(!busy && transcription::gpu_available_in_build());
@@ -623,32 +658,124 @@ impl App {
         self.refresh();
     }
 
-    fn ask_download(self: &Rc<Self>) {
-        let index = self.preferences.catalog.selected() as usize;
-        let Some(model) = model::CATALOG.get(index) else {
-            return;
+    fn refresh_models(self: &Rc<Self>) {
+        let directory = match settings::model_dir() {
+            Ok(path) => path,
+            Err(error) => {
+                self.models
+                    .status
+                    .set_text(&format!("Cannot locate model folder: {error:#}"));
+                return;
+            }
         };
+        self.models.directory.set_text(&directory.to_string_lossy());
+        if !self.busy() {
+            self.models.status.set_text("Loading installed models…");
+        }
+        let (tx, events) = mpsc::sync_channel(1);
+        // Replace any older scan: late results cannot overwrite a newer list.
+        *self.model_scan.borrow_mut() = Some(events);
+        self.refresh();
+        std::thread::spawn(move || {
+            let _ = tx.send(model::installed(&directory).map_err(|e| format!("{e:#}")));
+        });
+    }
+
+    fn select_model(&self, path: PathBuf) {
+        if self.busy() {
+            return;
+        }
+        self.settings.borrow_mut().model = Some(path);
+        self.persist();
+        self.update_model_label();
+        self.refresh();
+        self.models.window.close();
+    }
+
+    fn ask_import(self: &Rc<Self>, path: PathBuf) {
+        if self.busy() {
+            return;
+        }
+        let directory = match settings::model_dir() {
+            Ok(directory) => directory,
+            Err(error) => {
+                dialogs::message(
+                    &self.models.window,
+                    "Cannot locate model folder",
+                    &error.to_string(),
+                );
+                return;
+            }
+        };
+        if path.parent() == Some(directory.as_path()) {
+            self.select_model(path);
+            return;
+        }
         let weak = Rc::downgrade(self);
         dialogs::confirm(
-            &self.preferences.window,
-            "Download Whisper model?",
+            &self.models.window,
+            "Copy model to the model folder?",
             &format!(
-                "{} will be downloaded from huggingface.co to the application's data directory. No audio or transcript is uploaded. The file's SHA-256 checksum will be verified.",
-                model.name
+                "Selected: {}\n\nCopy it into {} so it appears in the model library, or use it from its original location? The original file will not be moved or deleted. Existing models will not be overwritten.",
+                path.display(),
+                directory.display()
             ),
-            &[("download", "Download")],
+            &[
+                ("original", "Use Original"),
+                ("copy", "Copy to Model Folder"),
+            ],
             move |response| {
-                if response == "download"
-                    && let Some(app) = weak.upgrade()
-                {
-                    app.start_download(index);
+                if let Some(app) = weak.upgrade() {
+                    match response.as_str() {
+                        "original" => app.select_model(path.clone()),
+                        "copy" => app.start_model_task(ModelTask::Copy(path.clone())),
+                        _ => {}
+                    }
                 }
             },
         );
     }
 
-    fn start_download(&self, index: usize) {
+    fn ask_download(self: &Rc<Self>) {
         if self.busy() {
+            return;
+        }
+        let catalog = gtk::DropDown::from_strings(
+            &model::CATALOG
+                .iter()
+                .map(|model| model.name)
+                .collect::<Vec<_>>(),
+        );
+        catalog.set_selected(1);
+        let dialog = adw::MessageDialog::new(
+            Some(&self.models.window),
+            Some("Download Whisper model"),
+            Some(
+                "Choose a model to download from huggingface.co into the model folder. SHA-256 is verified before selection. No audio or transcript is uploaded.",
+            ),
+        );
+        dialog.set_extra_child(Some(&catalog));
+        dialog.add_responses(&[("cancel", "Cancel"), ("download", "Download")]);
+        dialog.set_close_response("cancel");
+        dialog.set_default_response(Some("cancel"));
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(None, move |_, response| {
+            if response == "download"
+                && let Some(app) = weak.upgrade()
+            {
+                app.start_model_task(ModelTask::Download(catalog.selected() as usize));
+            }
+        });
+        dialog.present();
+    }
+
+    fn start_model_task(&self, task: ModelTask) {
+        if self.busy() {
+            return;
+        }
+        if let ModelTask::Download(index) = &task
+            && model::CATALOG.get(*index).is_none()
+        {
             return;
         }
         let directory = match settings::model_dir() {
@@ -656,36 +783,50 @@ impl App {
             Err(error) => {
                 dialogs::message(
                     &self.dialog_parent(),
-                    "Cannot download model",
+                    "Cannot locate model folder",
                     &error.to_string(),
                 );
                 return;
             }
         };
+        let copying = matches!(task, ModelTask::Copy(_));
         let (tx, events) = mpsc::sync_channel(64);
         let cancel = Arc::new(AtomicBool::new(false));
-        *self.download.borrow_mut() = Some(DownloadJob {
+        *self.download.borrow_mut() = Some(ModelJob {
             events,
             cancel: cancel.clone(),
+            copying,
         });
         self.main.progress.set_fraction(0.0);
-        self.main.status.set_text("Downloading model…");
+        let status = if copying {
+            "Copying model…"
+        } else {
+            "Downloading model…"
+        };
+        self.main.status.set_text(status);
+        self.models.status.set_text(status);
         self.refresh();
         std::thread::spawn(move || {
             let mut last = -1_i32;
-            let result = model::download(&model::CATALOG[index], &directory, &cancel, |fraction| {
+            let progress = |fraction: f64| {
                 let percent = (fraction * 100.0) as i32;
                 if percent != last {
                     let _ = tx.send(DownloadEvent::Progress(fraction));
                     last = percent;
                 }
-            })
+            };
+            let result = match task {
+                ModelTask::Download(index) => {
+                    model::download(&model::CATALOG[index], &directory, &cancel, progress)
+                }
+                ModelTask::Copy(path) => model::import(&path, &directory, &cancel, progress),
+            }
             .map_err(|e| format!("{e:#}"));
             let _ = tx.send(DownloadEvent::Finished(result));
         });
     }
 
-    fn poll(&self) {
+    fn poll(self: &Rc<Self>) {
         let devices =
             self.device_discovery
                 .borrow()
@@ -700,6 +841,44 @@ impl App {
         if let Some(result) = devices {
             self.device_discovery.borrow_mut().take();
             self.preferences.finish_device_refresh(result);
+            self.refresh();
+        }
+        let models = self
+            .model_scan
+            .borrow()
+            .as_ref()
+            .and_then(|events| match events.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Model folder scan stopped unexpectedly".into()))
+                }
+            });
+        if let Some(result) = models {
+            self.model_scan.borrow_mut().take();
+            match result {
+                Ok(paths) => {
+                    let weak = Rc::downgrade(self);
+                    self.models.set_entries(
+                        paths,
+                        self.settings.borrow().model.as_deref(),
+                        move |path| {
+                            if let Some(app) = weak.upgrade() {
+                                app.select_model(path);
+                            }
+                        },
+                    );
+                    if !self.busy() {
+                        self.models.status.set_text("Select a model above, download one, or choose a file from another folder.");
+                    }
+                }
+                Err(error) => {
+                    self.models.set_entries(Vec::new(), None, |_| {});
+                    self.models
+                        .status
+                        .set_text(&format!("Cannot list models: {error}"));
+                }
+            }
             self.refresh();
         }
         let events: Vec<_> = self
@@ -782,7 +961,27 @@ impl App {
             .download
             .borrow()
             .as_ref()
-            .map(|job| job.events.try_iter().collect())
+            .map(|job| {
+                let mut events = Vec::new();
+                loop {
+                    match job.events.try_recv() {
+                        Ok(event) => events.push(event),
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            if !events
+                                .iter()
+                                .any(|event| matches!(event, DownloadEvent::Finished(_)))
+                            {
+                                events.push(DownloadEvent::Finished(Err(
+                                    "Model operation stopped unexpectedly".into(),
+                                )));
+                            }
+                            break;
+                        }
+                    }
+                }
+                events
+            })
             .unwrap_or_default();
         for event in events {
             match event {
@@ -799,14 +998,25 @@ impl App {
                             self.settings.borrow_mut().model = Some(path);
                             self.persist();
                             self.update_model_label();
-                            self.main.status.set_text("Model verified and ready.");
+                            self.main.status.set_text("Model ready.");
+                            self.refresh_models();
                         }
                         Err(_) if cancelled => {
-                            self.main.status.set_text("Model download cancelled.")
+                            self.main.status.set_text("Model operation cancelled.");
+                            self.models.status.set_text(
+                                "Model operation cancelled. The previous selection has been kept.",
+                            );
                         }
                         Err(error) => {
-                            self.main.status.set_text("Model download failed.");
-                            dialogs::message(&self.dialog_parent(), "Download failed", &error);
+                            self.main.status.set_text("Model operation failed.");
+                            self.models.status.set_text(
+                                "Model operation failed. The previous selection has been kept.",
+                            );
+                            dialogs::message(
+                                &self.dialog_parent(),
+                                "Model operation failed",
+                                &error,
+                            );
                         }
                     }
                     self.refresh();

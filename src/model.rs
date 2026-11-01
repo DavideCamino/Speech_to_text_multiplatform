@@ -1,8 +1,8 @@
-//! Explicit, cancellable downloads from a small, checksum-pinned model catalog.
+//! Local model library, safe imports, and explicit checksum-pinned downloads.
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -47,6 +47,90 @@ pub const CATALOG: &[Model] = &[
         sha256: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
     },
 ];
+
+/// List installed ggml models without creating the directory on first launch.
+pub fn installed(directory: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).context("Cannot list the model directory"),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("bin"))
+            && path.is_file()
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Copy on a worker, staging the entire file before publishing it. Never
+/// overwrite an existing model, and remove temporary data on failure/cancel.
+pub fn import(
+    source: &Path,
+    directory: &Path,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(f64),
+) -> Result<PathBuf> {
+    ensure!(!cancel.load(Ordering::Relaxed), "Copy cancelled");
+    let name = source.file_name().context("Model has no filename")?;
+    ensure!(
+        source
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("bin")),
+        "Select a ggml .bin model"
+    );
+    let mut input = std::fs::File::open(source).context("Cannot open selected model")?;
+    let metadata = input.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() > 0,
+        "Selected model must be a non-empty file"
+    );
+    std::fs::create_dir_all(directory)?;
+    let target = directory.join(name);
+    ensure!(
+        !target.exists(),
+        "A model named {} already exists in the model folder; use it or select the original file instead",
+        name.to_string_lossy()
+    );
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".model-import-")
+        .suffix(".part")
+        .tempfile_in(directory)?;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut copied = 0_u64;
+    loop {
+        ensure!(!cancel.load(Ordering::Relaxed), "Copy cancelled");
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        temporary.write_all(&buffer[..count])?;
+        copied += count as u64;
+        ensure!(
+            copied <= metadata.len(),
+            "Source model changed while copying"
+        );
+        progress(copied as f64 / metadata.len() as f64);
+    }
+    ensure!(
+        copied == metadata.len(),
+        "Source model changed while copying"
+    );
+    temporary.as_file().sync_all()?;
+    ensure!(!cancel.load(Ordering::Relaxed), "Copy cancelled");
+    temporary
+        .persist_noclobber(&target)
+        .map_err(|error| error.error)
+        .context("Cannot install copied model (the destination may already exist)")?;
+    Ok(target)
+}
 
 async fn cancellable<T>(
     cancel: &AtomicBool,
