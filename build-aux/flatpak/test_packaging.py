@@ -2,6 +2,10 @@
 import importlib.util
 import json
 from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tempfile
 import tomllib
 import unittest
 
@@ -54,6 +58,29 @@ class ManifestTests(unittest.TestCase):
             config = tomllib.load(handle)
         self.assertTrue(config["net"]["offline"])
         self.assertEqual(config["source"]["flatpak-vendor"]["directory"], "cargo/vendor")
+
+    def test_local_dependency_notices_are_installed(self):
+        manifest = json.loads(next(HERE.glob("io.*.json")).read_text())
+        commands = manifest["modules"][0]["build-commands"]
+        registry_command = "python3 build-aux/flatpak/install-licenses.py cargo/vendor /app/share/licenses/speech2text/dependencies"
+        local_command = "python3 build-aux/flatpak/install-licenses.py vendor /app/share/licenses/speech2text/local-dependencies"
+        self.assertIn(registry_command, commands)
+        self.assertIn(local_command, commands)
+        # Run the manifest's local-vendor installer against the real patched
+        # dependency, redirecting only the /app destination to a temporary dir.
+        _, script, source, destination = shlex.split(local_command)
+        self.assertNotEqual(destination, shlex.split(registry_command)[-1])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "local-dependencies"
+            subprocess.run([sys.executable, str(ROOT / script), str(ROOT / source), str(output)],
+                           check=True, capture_output=True, text=True)
+            relative = Path("whisper-rs-sys/whisper.cpp/LICENSE")
+            self.assertEqual((output / relative).read_bytes(), (ROOT / source / relative).read_bytes())
+            packages = json.loads((output / "packages.json").read_text())
+            with (ROOT / source / "whisper-rs-sys/Cargo.toml").open("rb") as handle:
+                package = tomllib.load(handle)["package"]
+            self.assertIn({"name": package["name"], "version": package["version"],
+                           "license": package["license"]}, packages)
 
     def test_permissions_do_not_expose_the_home_directory_or_all_devices(self):
         manifest = json.loads(next(HERE.glob("io.*.json")).read_text())
