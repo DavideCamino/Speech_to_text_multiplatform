@@ -3,6 +3,7 @@
 mod dialogs;
 mod menu;
 mod preferences;
+mod transcript_buffer;
 mod views;
 
 #[cfg(test)]
@@ -50,6 +51,7 @@ struct App {
     rewrite: RewriteView,
     settings: RefCell<Settings>,
     transcript: RefCell<Transcript>,
+    transcript_buffer: RefCell<transcript_buffer::TranscriptBuffer>,
     provisional: RefCell<String>,
     job: RefCell<Option<Job>>,
     download: RefCell<Option<DownloadJob>>,
@@ -98,6 +100,9 @@ pub fn build(application: &adw::Application) {
         .bind_property("fraction", &preferences.progress, "fraction")
         .sync_create()
         .build();
+    let transcript_buffer = RefCell::new(transcript_buffer::TranscriptBuffer::new(
+        main.transcript.buffer(),
+    ));
     let app = Rc::new(App {
         window,
         stack,
@@ -106,6 +111,7 @@ pub fn build(application: &adw::Application) {
         rewrite,
         settings: RefCell::new(settings),
         transcript: RefCell::default(),
+        transcript_buffer,
         provisional: RefCell::default(),
         job: RefCell::default(),
         download: RefCell::default(),
@@ -466,14 +472,9 @@ impl App {
     }
 
     fn render_transcript(&self) {
-        let buffer = self.main.transcript.buffer();
-        buffer.set_text(&self.transcript.borrow().text());
-        let provisional = self.provisional.borrow();
-        if !provisional.is_empty() {
-            let mut end = buffer.end_iter();
-            buffer.insert(&mut end, " ");
-            buffer.insert_with_tags_by_name(&mut end, &provisional, &["provisional"]);
-        }
+        self.transcript_buffer
+            .borrow_mut()
+            .update(&self.transcript.borrow(), &self.provisional.borrow());
     }
 
     fn request_start(self: &Rc<Self>, source: Source) {
@@ -519,6 +520,7 @@ impl App {
         }
         if !append {
             *self.transcript.borrow_mut() = Transcript::default();
+            self.transcript_buffer.borrow_mut().reset();
             self.dirty.set(false);
         }
         self.provisional.borrow_mut().clear();
@@ -661,6 +663,7 @@ impl App {
             .as_ref()
             .map(|job| job.events.try_iter().collect())
             .unwrap_or_default();
+        let mut transcript_changed = false;
         for event in events {
             match event {
                 Event::Status(text) => {
@@ -671,14 +674,21 @@ impl App {
                 Event::Progress(fraction) => self.main.progress.set_fraction(fraction),
                 Event::Final(segments) => {
                     if !segments.is_empty() {
-                        self.dirty.set(true);
+                        let mut transcript = self.transcript.borrow_mut();
+                        let previous_len = transcript.segments.len();
+                        transcript.append(segments);
+                        if transcript.segments.len() > previous_len {
+                            self.dirty.set(true);
+                            transcript_changed = true;
+                        }
                     }
-                    self.transcript.borrow_mut().append(segments);
-                    self.render_transcript();
                 }
                 Event::Provisional(text) => {
-                    *self.provisional.borrow_mut() = text;
-                    self.render_transcript();
+                    let mut provisional = self.provisional.borrow_mut();
+                    if *provisional != text {
+                        *provisional = text;
+                        transcript_changed = true;
+                    }
                 }
                 Event::Meter { seconds, level } => {
                     if self.job_stopping() {
@@ -717,6 +727,11 @@ impl App {
                     self.refresh();
                 }
             }
+        }
+        // Final/provisional events often arrive together. Render the accepted
+        // suffix and latest provisional hypothesis only once per polling tick.
+        if transcript_changed {
+            self.render_transcript();
         }
         let events: Vec<_> = self
             .download
