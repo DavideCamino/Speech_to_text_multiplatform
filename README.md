@@ -11,8 +11,8 @@ A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.c
 - A single **Local Whisper model** button in Settings shows the selected model's filename. It opens a library listing `.bin` models in the application's default model folder. Download multilingual Tiny, Base, Small, Medium, or Large V3 from the built-in catalog, or select a model in another folder and choose **Use Original** or **Copy to Model Folder**. Downloads verify pinned SHA-256 checksums; downloads and copies show progress and support cancellation. Copies preserve the source and never overwrite existing models.
 - Automatic language detection or a manual Whisper language code (`en`, `it`, `fr`, etc.). Transcription preserves the spoken language; translation is disabled.
 - GPU-enabled builds for Vulkan, CUDA, Metal, or **AMD ROCm (HIP/hipBLAS)**, with a runtime switch to CPU mode and a saved backend selector.
-- A three-dot header menu with **Settings**, **Keyboard Shortcuts**, and **About Speech2Text**. Settings has a **Speech to Text** page for model/audio options and an empty **LLM** page reserved for future integration.
-- A second view with an editable example prompt, read-only original/result panes, and a **demo Rewrite action that copies the original unchanged**. Results can be copied or exported as TXT/Markdown. No LLM is contacted.
+- A three-dot header menu with **Settings**, **Keyboard Shortcuts**, and **About Speech2Text**. Settings has a **Speech to Text** page for model/audio options and an **LLM** page for a llama.cpp server connection.
+- A second view with editable rewrite instructions, a read-only original, and live native GTK Markdown results from a configured llama.cpp server. Generation can be stopped; results can be copied as Markdown or exported as plain TXT/Markdown.
 - Replace/append confirmation, cancellation that keeps completed segments, unexported-text warnings, and saved non-sensitive preferences.
 
 Developed by **Davide Camino**. [Source code and releases](https://github.com/DavideCamino/Speech_to_text_multiplatform).
@@ -262,7 +262,7 @@ Prioritize **selected-file CPU transcription** before live recording:
 - Check startup, icons, Settings/About, and clipboard behavior without a developer toolchain installed.
 - Select a local whisper.cpp model, or explicitly download Tiny in Settings. Confirm that file selection and model paths work, including paths with spaces/non-ASCII characters.
 - Transcribe a short known WAV, then try MP3/FLAC/OGG/M4A; inspect text and TXT/SRT exports. FFmpeg is not required at runtime.
-- Check cancellation, reopening the app with saved preferences, and the demo rewrite/export view (still no LLM).
+- Check cancellation, reopening the app with saved preferences, and streaming rewrite/export against a local llama.cpp server.
 - Then test microphone permission/device selection, capture, and stopping. Windows privacy settings must permit desktop apps to access the microphone.
 - Report the Windows version, workflow run/commit, and console errors. `runtime-manifest.json` lists packaged DLLs; `licenses/msys2-packages.txt` records native/build-tool versions. The separate **`Speech2Text-windows-diagnostics`** artifact contains runner build information and startup logs.
 
@@ -278,13 +278,32 @@ python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
 
 The backend uses in-process Symphonia decoding, whisper.cpp, platform-specific preferences, and GTK/GIO file dialogs/clipboard. Windows CPU/Vulkan release compilation and runtime assembly have been exercised locally. The GitHub-hosted installer workflow must still be validated on its first run. GPU inference and clean-machine compatibility require manual testing. macOS runtime bundling, microphone usage description, signing, and installer integration remain future work.
 
+## LLM rewriting (first draft)
+
+1. Start a llama.cpp server with a chat-capable GGUF model, for example:
+   ```sh
+   llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
+   # Optional authentication: add --api-key YOUR_TOKEN
+   ```
+2. Open **Settings → LLM**, enter the host/IP and port, and optionally the auth token. Use **Test Connection** to verify access and discover the loaded model. The default is `127.0.0.1:8080` over HTTP. Enter only a hostname/IP, not a URL or API path. HTTPS requires a server or reverse proxy configured with a trusted certificate.
+3. Transcribe audio, open **Rewrite**, edit the instructions, and click **Rewrite**. Instructions are sent as a system message and the original as a user message through `/v1/chat/completions` with streaming enabled.
+4. The result appears during generation, rendered by `gtk-markdown` in batches on the UI polling tick (approximately 80 ms). **Stop Generation** cancels the request and preserves partial output. **Copy Markdown** and `.md` export retain the raw response; `.txt` export removes Markdown formatting.
+
+The host, port and HTTPS choice are saved; **tokens are session-only** and are never saved in preferences or logged. HTTP sends both text and tokens unencrypted: use loopback for a local server, or HTTPS on untrusted networks. `localhost` refers to the machine running the app; the Flatpak already has network permission. For a LAN server, configure its bind address/firewall and authentication deliberately.
+
+This draft uses the first model advertised by `/v1/models`; it does not manage models, preserve conversation history, or split transcripts that exceed the model context window. Connection attempts time out after 10 seconds and stalled operations after 120 seconds. Output is limited to 512 KiB. The Markdown widget rebuilds on updates, so long responses may affect scrolling/selection. Only the widget's supported Markdown subset is rendered. Model-generated images are disabled to prevent automatic network/local-file loading; links are displayed but do not launch handlers.
+
+### Markdown dependency licensing
+
+The project's own source remains MIT-licensed. The `gtk-markdown` dependency is **GPL-3.0-or-later**, so distributing a linked application requires complying with GPL terms, including corresponding-source obligations; do not describe the combined binary as MIT-only. AppStream metadata reflects both licenses. Review distribution requirements before publishing builds.
+
 ## Data and privacy
 
 - Audio is decoded/captured in memory, not saved by the app. Long files are processed incrementally.
 - Transcript text and rewrite prompts/results are not persisted automatically.
-- Model paths, language, microphone selection, and the acceleration preference are saved as JSON in the OS-specific application configuration directory.
+- Model paths, language, microphone selection, acceleration preference, and LLM server address (never its token) are saved as JSON in the OS-specific application configuration directory.
 - Downloaded models live in the OS-specific application data directory under `models/`.
-- Only explicit model downloads make application network requests, to Hugging Face and its download/CDN redirects. No audio/text is uploaded. Native Whisper logging hooks are silenced to avoid logging recognized words.
+- Explicit model downloads contact Hugging Face and its download/CDN redirects. LLM connection tests and rewrites contact only the configured server; rewrites send instructions and transcript text, never audio. LLM requests do not follow redirects or use environment proxies. Native Whisper logging hooks are silenced to avoid logging recognized words.
 - TXT/Markdown/SRT export writes only to the location selected in the file chooser. Markdown export preserves the result as-is; it does not invent Markdown formatting.
 
 ## Architecture
@@ -302,9 +321,14 @@ src/
     engine.rs            Whisper context/state and per-window recognition
     gpu.rs               Stable backend IDs, GGML registry/device-index mapping
     worker.rs            Job lifecycle, file chunks, live provisional/final events
+  llm/
+    client.rs            OpenAI-compatible model discovery and chat streaming
+    stream.rs            Chunk-safe SSE decoding and completion validation
+    worker.rs            Cancellable bounded network-worker events
   ui/
+    rewrite.rs           Rewrite lifecycle, raw Markdown state, batched rendering
     views.rs             Transcription and rewrite view widgets
-    preferences.rs       Speech-to-text and empty LLM settings pages
+    preferences.rs       Speech-to-text and LLM connection settings pages
     menu.rs              Header menu, shared shortcuts, application information
     dialogs.rs           Confirmation, file selection, asynchronous export
     mod.rs               Controller: state, event polling, navigation, actions
@@ -337,9 +361,13 @@ cargo run --release --features rocm,vulkan --example transcribe -- \
 
 The transcription example prints plain text to stdout and SRT to stderr. The normal app does not print transcripts.
 
+LLM mock-server tests cover auth, loaded-model discovery, live streaming before completion, cancellation, truncated/malformed responses, HTTP errors, and unavailable servers. They use loopback sockets, not an external server or model.
+
 Automated tests cover SRT formatting/Unicode, segment normalization, resampling across packet boundaries, incremental stereo WAV decoding, invalid input, worker model errors, pre-cancelled downloads, compiled GPU feature detection, backend device-index mapping, preference migration/round-tripping, and GTK settings/menu/selector behavior. They do not require a model, network access, display, or microphone, but native build dependencies are still required.
 
 ### Validation performed in this environment
+
+- LLM rewrite draft: `cargo test --locked` passed **43 tests**, with one pre-existing model-dependent test ignored. This includes loopback mock-server streaming/cancellation/auth tests and GTK connection controls, live rendering, busy-state, partial-output, and reset checks. Formatting and Clippy checks passed; pre-existing vendored Whisper warnings remain. Flatpak and Windows packaging unit tests and AppStream validation passed. A real llama.cpp model server and newly built release bundles have not been exercised for this feature.
 
 - `cargo test --locked`: **13 tests passed**, including compiled GPU feature detection and a GTK settings/menu surface test (the GTK test is skipped when no display is available).
 - `AMDGPU_TARGETS=gfx1103 cargo check --locked --features rocm`: passed with the installed ROCm toolkit.
@@ -365,6 +393,6 @@ Automated tests cover SRT formatting/Unicode, segment normalization, resampling 
 - Real-time capture requires inference to keep up. Its bounded callback queue may overflow on slow hardware; a clear error preserves completed text. Select Tiny or use a supported GPU build.
 - Device names are discovered on a background thread at startup. Use Settings → Audio input → Refresh after connecting/disconnecting a microphone; automatic hot-plug monitoring is not implemented. Some unusual input sample formats are not supported.
 - File progress is updated at inference-window boundaries; it can remain unchanged while a model loads or the first window runs.
-- No model download resume, transcript history, automatic audio saving, translation, speaker diarization, LLM, Flathub publication/automatic app updates, or macOS installer integration yet. Windows installers are unsigned; automatic updates are not implemented.
+- No model download resume, transcript history, automatic audio saving, translation, speaker diarization, LLM model management, Flathub publication/automatic app updates, or macOS installer integration yet. Windows installers are unsigned; automatic updates are not implemented.
 
 The agreed requirements remain in [`question.md`](question.md).

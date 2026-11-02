@@ -13,6 +13,7 @@ fn settings_pages_and_menu_surfaces_build() {
     let parent = adw::ApplicationWindow::builder().build();
     device_discovery_states(&parent);
     model_library_window(&parent);
+    rewrite_generation_states(&parent);
     let compiled = transcription::compiled_gpu_backends();
     let settings = Settings {
         gpu_backend: compiled.last().copied(),
@@ -43,6 +44,18 @@ fn settings_pages_and_menu_surfaces_build() {
         preferences.window.visible_page_name().as_deref(),
         Some("llm")
     );
+    assert_eq!(preferences.llm_host.text(), "127.0.0.1");
+    assert_eq!(preferences.llm_port.text(), "8080");
+    assert!(!preferences.llm_https.is_active());
+    assert!(preferences.llm_token.text().is_empty());
+    assert!(preferences.llm_test.is_sensitive());
+    let rewrite = RewriteView::new();
+    assert_eq!(rewrite.run.label().as_deref(), Some("Rewrite"));
+    assert!(!buffer_text(&rewrite.prompt).is_empty());
+    assert!(!rewrite.stop.is_sensitive());
+    rewrite.result.set_markdown("# Heading\n\n**Live** output");
+    assert_eq!(rewrite.result.markdown(), "# Heading\n\n**Live** output");
+    assert!(rewrite.result.first_child().is_some());
     let menu = menu::button();
     assert_eq!(menu.menu_model().unwrap().n_items(), 3);
     for (_, _, accelerator) in menu::SHORTCUTS {
@@ -55,6 +68,85 @@ fn settings_pages_and_menu_surfaces_build() {
             window.destroy();
         }
     }
+}
+
+fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
+    use crate::llm;
+    let settings = Settings::default();
+    let main = MainView::new();
+    let preferences = preferences::Preferences::new(parent, &settings);
+    let models = models::Models::new(&preferences.window);
+    let app = App {
+        window: parent.clone(),
+        stack: gtk::Stack::new(),
+        transcript_buffer: RefCell::new(transcript_buffer::TranscriptBuffer::new(
+            main.transcript.buffer(),
+        )),
+        main,
+        preferences,
+        models,
+        model_scan: RefCell::default(),
+        rewrite: RewriteView::new(),
+        rewrite_state: RefCell::default(),
+        settings: RefCell::new(settings),
+        transcript: RefCell::default(),
+        provisional: RefCell::default(),
+        job: RefCell::default(),
+        download: RefCell::default(),
+        device_discovery: RefCell::default(),
+        recording: Cell::new(false),
+        dirty: Cell::new(false),
+        rewrite_dirty: Cell::new(false),
+        allow_close: Cell::new(false),
+    };
+    app.stack.add_named(&app.main.root, Some("main"));
+    app.stack.add_named(&app.rewrite.root, Some("rewrite"));
+    app.preferences.llm_port.set_text("not-a-port");
+    assert!(app.llm_connection().is_err());
+    app.preferences.llm_port.set_text("8080");
+    assert_eq!(app.llm_connection().unwrap().port, 8080);
+    let (tx, events) = mpsc::sync_channel(8);
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.rewrite_state.borrow_mut().job = Some(llm::Job {
+        events,
+        cancel: cancel.clone(),
+    });
+    app.refresh();
+    assert!(app.busy());
+    assert!(!app.rewrite.run.is_sensitive());
+    assert!(!app.rewrite.prompt.is_editable());
+    assert!(!app.rewrite.back.is_sensitive());
+    assert!(app.rewrite.stop.is_sensitive());
+    assert!(!app.preferences.llm_token.is_sensitive());
+    tx.send(llm::Event::Text("# Live\n\n**Partial** output".into()))
+        .unwrap();
+    app.poll_rewrite();
+    assert_eq!(
+        app.rewrite.result.markdown(),
+        "# Live\n\n**Partial** output"
+    );
+    assert!(app.rewrite_dirty.get());
+    assert!(!app.rewrite.copy.is_sensitive());
+    cancel.store(true, Ordering::Relaxed);
+    tx.send(llm::Event::Finished(Err("Cancelled".into())))
+        .unwrap();
+    app.poll_rewrite();
+    assert!(!app.busy());
+    assert!(
+        app.rewrite
+            .status
+            .text()
+            .contains("Partial output has been kept")
+    );
+    assert_eq!(app.rewrite_markdown(), "# Live\n\n**Partial** output");
+    assert!(app.rewrite.copy.is_sensitive());
+    assert!(app.rewrite.run.is_sensitive());
+    assert!(!app.rewrite.stop.is_sensitive());
+    app.reset_rewrite();
+    assert!(!app.rewrite_dirty.get());
+    assert!(app.rewrite_markdown().is_empty());
+    assert!(app.rewrite.result.markdown().is_empty());
+    assert!(!app.rewrite.copy.is_sensitive());
 }
 
 fn model_library_window(parent: &adw::ApplicationWindow) {

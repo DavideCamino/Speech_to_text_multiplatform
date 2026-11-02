@@ -6,6 +6,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub llm: crate::llm::Connection,
     pub model: Option<PathBuf>,
     /// None means automatic language detection; otherwise a Whisper language code.
     pub language: Option<String>,
@@ -18,6 +19,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            llm: Default::default(),
             model: None,
             language: None,
             device: None,
@@ -64,6 +66,27 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"use_gpu":true}"#).unwrap();
         assert_eq!(settings.gpu_backend, None);
         assert!(settings.use_gpu);
+        assert_eq!(settings.llm.host, "127.0.0.1");
+        assert_eq!(settings.llm.port, 8080);
+        assert!(!settings.llm.https);
+    }
+
+    #[test]
+    fn llm_connection_round_trips_without_credentials() {
+        let settings = Settings {
+            llm: crate::llm::Connection {
+                host: "192.168.1.8".into(),
+                port: 8443,
+                https: true,
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("token"));
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.llm.host, "192.168.1.8");
+        assert_eq!(restored.llm.port, 8443);
+        assert!(restored.llm.https);
     }
 
     #[test]

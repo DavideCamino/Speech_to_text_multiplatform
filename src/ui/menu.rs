@@ -77,7 +77,7 @@ pub fn about(parent: &adw::ApplicationWindow) {
         .copyright("© 2026 Davide Camino and Speech2Text contributors")
         .version(env!("CARGO_PKG_VERSION"))
         .license_type(gtk::License::MitX11)
-        .comments("Private, on-device speech recognition with Whisper.\nBuilt with Rust, GTK, and libadwaita.\n\nThe rewrite feature is a demonstration; no LLM is connected.")
+        .comments("Private, on-device speech recognition with Whisper.\nBuilt with Rust, GTK, and libadwaita.\n\nRewrite transcripts using a configured llama.cpp server, with live Markdown output. Text is sent only when you request a rewrite.")
         .build();
     window.present();
 }

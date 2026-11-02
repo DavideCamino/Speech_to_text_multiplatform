@@ -4,6 +4,7 @@ mod dialogs;
 mod menu;
 mod models;
 mod preferences;
+mod rewrite;
 mod transcript_buffer;
 mod views;
 
@@ -70,6 +71,7 @@ struct App {
     models: models::Models,
     model_scan: RefCell<Option<ModelScan>>,
     rewrite: RewriteView,
+    rewrite_state: RefCell<rewrite::State>,
     settings: RefCell<Settings>,
     transcript: RefCell<Transcript>,
     transcript_buffer: RefCell<transcript_buffer::TranscriptBuffer>,
@@ -134,6 +136,7 @@ pub fn build(application: &adw::Application) {
         models,
         model_scan: RefCell::default(),
         rewrite,
+        rewrite_state: RefCell::default(),
         settings: RefCell::new(settings),
         transcript: RefCell::default(),
         transcript_buffer,
@@ -160,6 +163,8 @@ pub fn build(application: &adw::Application) {
         if !app.window.is_visible() {
             app.job.borrow_mut().take();
             app.download.borrow_mut().take();
+            app.rewrite_state.borrow_mut().job.take();
+            app.rewrite_state.borrow_mut().test.take();
             return gtk::glib::ControlFlow::Break;
         }
         app.poll();
@@ -274,18 +279,22 @@ impl App {
             app.export("transcript.srt", content, false);
         });
         on_click(&self.main.rewrite, self, |app| app.enter_rewrite());
+        on_click(&self.preferences.llm_test, self, |app| app.test_llm());
+        on_click(&self.rewrite.stop, self, |app| {
+            if let Some(job) = app.rewrite_state.borrow().job.as_ref() {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
+            app.rewrite.stop.set_sensitive(false);
+            app.rewrite.status.set_text("Stopping…");
+        });
         on_click(&self.rewrite.back, self, |app| {
             app.stack.set_visible_child_name("main")
         });
         on_click(&self.rewrite.run, self, |app| {
-            let run = move |app: &App| {
-                app.rewrite
-                    .result
-                    .buffer()
-                    .set_text(&buffer_text(&app.rewrite.source));
-                app.rewrite_dirty.set(true);
-                app.refresh();
-            };
+            if app.busy() {
+                return;
+            }
+            let run = |app: &App| app.start_rewrite();
             if app.rewrite_dirty.get() {
                 let weak = Rc::downgrade(&app);
                 dialogs::confirm(
@@ -306,15 +315,17 @@ impl App {
             }
         });
         on_click(&self.rewrite.copy, self, |app| {
-            app.window
-                .clipboard()
-                .set_text(&buffer_text(&app.rewrite.result))
+            app.window.clipboard().set_text(&app.rewrite_markdown())
         });
         on_click(&self.rewrite.txt, self, |app| {
-            app.export("rewritten.txt", buffer_text(&app.rewrite.result), true)
+            app.export(
+                "rewritten.txt",
+                rewrite::plain_text(&app.rewrite_markdown()),
+                true,
+            )
         });
         on_click(&self.rewrite.markdown, self, |app| {
-            app.export("rewritten.md", buffer_text(&app.rewrite.result), true)
+            app.export("rewritten.md", app.rewrite_markdown(), true)
         });
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
@@ -390,7 +401,9 @@ impl App {
     }
 
     fn busy(&self) -> bool {
-        self.job.borrow().is_some() || self.download.borrow().is_some()
+        self.job.borrow().is_some()
+            || self.download.borrow().is_some()
+            || self.rewrite_state.borrow().job.is_some()
     }
 
     fn job_stopping(&self) -> bool {
@@ -428,6 +441,9 @@ impl App {
                         .copied()
                 });
             settings.device = self.preferences.selected_device();
+            if let Ok(connection) = self.llm_connection() {
+                settings.llm = connection;
+            }
         }
         self.persist();
     }
@@ -520,18 +536,43 @@ impl App {
                 .borrow()
                 .as_ref()
                 .is_some_and(|job| job.cancel.load(Ordering::Relaxed));
-        self.main.cancel.set_sensitive(busy && !cancelling);
+        self.main
+            .cancel
+            .set_sensitive((self.job.borrow().is_some() || downloading) && !cancelling);
         for button in [&self.main.copy, &self.main.txt, &self.main.srt] {
             button.set_sensitive(has_text && !busy);
         }
         self.main.rewrite.set_sensitive(has_text && !busy);
-        let has_result = !buffer_text(&self.rewrite.result).trim().is_empty();
+        let state = self.rewrite_state.borrow();
+        let generating = state.job.is_some();
+        let connection_editable = !generating && state.test.is_none();
+        self.preferences.llm_host.set_sensitive(connection_editable);
+        self.preferences.llm_port.set_sensitive(connection_editable);
+        self.preferences
+            .llm_https
+            .set_sensitive(connection_editable);
+        self.preferences
+            .llm_token
+            .set_sensitive(connection_editable);
+        self.preferences.llm_test.set_sensitive(connection_editable);
+        self.rewrite
+            .run
+            .set_sensitive(!busy && state.test.is_none());
+        self.rewrite.prompt.set_editable(!generating);
+        self.rewrite.back.set_sensitive(!generating);
+        self.rewrite.stop.set_sensitive(
+            state
+                .job
+                .as_ref()
+                .is_some_and(|job| !job.cancel.load(Ordering::Relaxed)),
+        );
+        let has_result = !state.markdown.trim().is_empty();
         for button in [
             &self.rewrite.copy,
             &self.rewrite.txt,
             &self.rewrite.markdown,
         ] {
-            button.set_sensitive(has_result);
+            button.set_sensitive(has_result && !generating);
         }
     }
 
@@ -603,11 +644,15 @@ impl App {
     fn export(self: &Rc<Self>, name: &str, content: String, rewrite: bool) {
         let weak = Rc::downgrade(self);
         // Compare snapshots so an asynchronous save cannot mark newer text saved.
-        let snapshot = content.clone();
+        let snapshot = if rewrite {
+            self.rewrite_markdown()
+        } else {
+            content.clone()
+        };
         dialogs::save(&self.window, name, content, move || {
             if let Some(app) = weak.upgrade() {
                 if rewrite {
-                    if buffer_text(&app.rewrite.result) == snapshot {
+                    if app.rewrite_markdown() == snapshot {
                         app.rewrite_dirty.set(false);
                     }
                 } else {
@@ -652,7 +697,9 @@ impl App {
             .source
             .buffer()
             .set_text(&self.transcript.borrow().text());
-        self.rewrite.result.buffer().set_text("");
+        self.rewrite_state.borrow_mut().markdown.clear();
+        self.rewrite.result.set_markdown("");
+        self.rewrite.status.set_text("Ready");
         self.rewrite_dirty.set(false);
         self.stack.set_visible_child_name("rewrite");
         self.refresh();
@@ -827,6 +874,7 @@ impl App {
     }
 
     fn poll(self: &Rc<Self>) {
+        self.poll_rewrite();
         let devices =
             self.device_discovery
                 .borrow()

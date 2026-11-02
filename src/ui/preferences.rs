@@ -6,6 +6,12 @@ use std::cell::{Cell, RefCell};
 
 pub struct Preferences {
     pub window: adw::PreferencesWindow,
+    pub llm_host: adw::EntryRow,
+    pub llm_port: adw::EntryRow,
+    pub llm_https: adw::SwitchRow,
+    pub llm_token: adw::PasswordEntryRow,
+    pub llm_test: gtk::Button,
+    pub llm_status: adw::ActionRow,
     pub model_label: gtk::Label,
     pub select_model: gtk::Button,
     pub gpu: gtk::Switch,
@@ -150,14 +156,52 @@ impl Preferences {
         config.add(&device_row);
         stt.add(&config);
         window.add(&stt);
-        // Deliberately empty until LLM integration is implemented.
         let llm = adw::PreferencesPage::builder()
             .title("LLM")
             .name("llm")
             .icon_name("text-editor-symbolic")
             .build();
+        let connection = adw::PreferencesGroup::builder()
+            .title("llama.cpp server")
+            .description("Text and instructions are sent to this server. HTTP is unencrypted; use HTTPS for untrusted networks. Tokens are kept only until the app closes.")
+            .build();
+        let llm_host = adw::EntryRow::builder()
+            .title("Host / IP address")
+            .text(&settings.llm.host)
+            .build();
+        let llm_port = adw::EntryRow::builder()
+            .title("Port")
+            .text(settings.llm.port.to_string())
+            .build();
+        let llm_https = adw::SwitchRow::builder()
+            .title("Use HTTPS")
+            .active(settings.llm.https)
+            .build();
+        let llm_token = adw::PasswordEntryRow::builder()
+            .title("Auth token (optional, session only)")
+            .build();
+        let llm_test = gtk::Button::with_label("Test Connection");
+        llm_test.set_valign(Align::Center);
+        let llm_status = adw::ActionRow::builder()
+            .title("Connection")
+            .subtitle("Not tested")
+            .use_markup(false)
+            .build();
+        llm_status.add_suffix(&llm_test);
+        connection.add(&llm_host);
+        connection.add(&llm_port);
+        connection.add(&llm_https);
+        connection.add(&llm_token);
+        connection.add(&llm_status);
+        llm.add(&connection);
         window.add(&llm);
         Self {
+            llm_host,
+            llm_port,
+            llm_https,
+            llm_token,
+            llm_test,
+            llm_status,
             window,
             model_label,
             select_model,

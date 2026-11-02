@@ -19,7 +19,7 @@ pub fn text_view(editable: bool) -> gtk::TextView {
         .build()
 }
 
-pub fn pane(title: &str, view: &gtk::TextView) -> gtk::Box {
+pub fn pane(title: &str, view: &impl IsA<gtk::Widget>) -> gtk::Box {
     let container = column(8);
     let label = gtk::Label::builder()
         .label(title)
@@ -128,7 +128,10 @@ pub struct RewriteView {
     pub back: gtk::Button,
     pub run: gtk::Button,
     pub source: gtk::TextView,
-    pub result: gtk::TextView,
+    pub prompt: gtk::TextView,
+    pub result: gtk_markdown::MarkdownTextView,
+    pub stop: gtk::Button,
+    pub status: gtk::Label,
     pub copy: gtk::Button,
     pub txt: gtk::Button,
     pub markdown: gtk::Button,
@@ -152,18 +155,34 @@ impl RewriteView {
         prompt_pane.set_vexpand(false);
         root.append(&prompt_pane);
         let notice = gtk::Label::builder()
-            .label("Demo: Rewrite copies the original text unchanged. No LLM is connected.")
+            .label("Instructions and original text will be sent to the LLM server configured in Settings.")
             .wrap(true)
             .halign(Align::Start)
             .build();
         notice.add_css_class("dim-label");
         root.append(&notice);
-        let run = gtk::Button::with_label("Rewrite (Demo)");
+        let run = gtk::Button::with_label("Rewrite");
         run.add_css_class("suggested-action");
         run.set_halign(Align::End);
         root.append(&run);
+        let stop = gtk::Button::with_label("Stop Generation");
+        stop.set_halign(Align::End);
+        stop.set_sensitive(false);
+        root.append(&stop);
+        let status = gtk::Label::builder()
+            .label("Ready")
+            .wrap(true)
+            .halign(Align::Start)
+            .build();
+        root.append(&status);
         let source = text_view(false);
-        let result = text_view(false);
+        let result = gtk_markdown::MarkdownTextView::new();
+        result.set_margin_start(18);
+        result.set_margin_end(18);
+        result.set_margin_top(16);
+        result.set_margin_bottom(16);
+        // Model-generated links must never launch arbitrary URI handlers.
+        result.connect_link_activated(|_, _| true);
         let panes = gtk::Box::new(Orientation::Horizontal, 12);
         panes.set_homogeneous(true);
         panes.set_vexpand(true);
@@ -171,7 +190,7 @@ impl RewriteView {
         panes.append(&pane("Result", &result));
         root.append(&panes);
         let footer = gtk::Box::new(Orientation::Horizontal, 8);
-        let copy = gtk::Button::with_label("Copy Result");
+        let copy = gtk::Button::with_label("Copy Markdown");
         let txt = gtk::Button::with_label("Save TXT…");
         let markdown = gtk::Button::with_label("Save Markdown…");
         for button in [&copy, &txt, &markdown] {
@@ -184,6 +203,9 @@ impl RewriteView {
             run,
             source,
             result,
+            prompt,
+            stop,
+            status,
             copy,
             txt,
             markdown,
