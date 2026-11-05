@@ -10,6 +10,9 @@ fn settings_pages_and_menu_surfaces_build() {
     // Keep all GTK checks on this one test thread: GTK cannot be initialized
     // independently by parallel Rust test threads.
     incremental_transcript_updates();
+    text_zoom::test_font_zoom();
+    text_zoom::test_shared_recognized_zoom();
+    font_zoom_panes();
     let parent = adw::ApplicationWindow::builder().build();
     device_discovery_states(&parent);
     model_library_window(&parent);
@@ -50,7 +53,7 @@ fn settings_pages_and_menu_surfaces_build() {
     assert!(!preferences.llm_https.is_active());
     assert!(preferences.llm_token.text().is_empty());
     assert!(preferences.llm_test.is_sensitive());
-    let rewrite = RewriteView::new();
+    let rewrite = RewriteView::new(&Rc::new(text_zoom::ZoomGroup::default()));
     assert_eq!(rewrite.run.label().as_deref(), Some("Rewrite"));
     assert!(!buffer_text(&rewrite.prompt).is_empty());
     assert!(!rewrite.stop.is_sensitive());
@@ -79,9 +82,45 @@ fn settings_pages_and_menu_surfaces_build() {
     }
 }
 
+fn font_zoom_panes() {
+    fn zoom_controller(view: &impl IsA<gtk::Widget>) -> Option<gtk::EventControllerScroll> {
+        let pane = view.as_ref().parent().unwrap().parent().unwrap();
+        let controllers = pane.observe_controllers();
+        (0..controllers.n_items())
+            .filter_map(|index| {
+                controllers
+                    .item(index)?
+                    .downcast::<gtk::EventControllerScroll>()
+                    .ok()
+            })
+            .find(|controller| controller.name().as_deref() == Some("text-font-zoom"))
+    }
+    let recognized_zoom = Rc::new(text_zoom::ZoomGroup::default());
+    let main = MainView::new(&recognized_zoom);
+    let rewrite = RewriteView::new(&recognized_zoom);
+    for view in [&main.transcript, &rewrite.source, &rewrite.prompt] {
+        let controller = zoom_controller(view).expect("plain-text pane zoom controller");
+        assert_eq!(
+            controller.propagation_phase(),
+            gtk::PropagationPhase::Capture
+        );
+        assert_eq!(
+            controller.flags(),
+            gtk::EventControllerScrollFlags::VERTICAL
+        );
+        // Synthetic scroll signals without Ctrl must propagate normally.
+        assert!(!controller.emit_by_name::<bool>("scroll", &[&0.0_f64, &-1.0_f64]));
+    }
+    assert!(
+        zoom_controller(&rewrite.result).is_none(),
+        "Markdown result must not be changed"
+    );
+}
+
 fn test_app(parent: &adw::ApplicationWindow) -> Rc<App> {
     let settings = Settings::default();
-    let main = MainView::new();
+    let recognized_zoom = Rc::new(text_zoom::ZoomGroup::default());
+    let main = MainView::new(&recognized_zoom);
     let preferences = preferences::Preferences::new(parent, &settings);
     let models = models::Models::new(&preferences.window);
     Rc::new(App {
@@ -99,7 +138,7 @@ fn test_app(parent: &adw::ApplicationWindow) -> Rc<App> {
         download_check: RefCell::default(),
         settings_writer: RefCell::new(settings::SaveWorker::with_save(|_| Ok(()))),
         closing: Cell::new(false),
-        rewrite: RewriteView::new(),
+        rewrite: RewriteView::new(&recognized_zoom),
         rewrite_state: RefCell::default(),
         settings: RefCell::new(settings),
         transcript: RefCell::default(),
@@ -487,7 +526,7 @@ fn incremental_transcript_updates() {
     use super::transcript_buffer::TranscriptBuffer;
     use crate::transcript::Segment;
 
-    let view = MainView::new();
+    let view = MainView::new(&Rc::new(text_zoom::ZoomGroup::default()));
     let buffer = view.transcript.buffer();
     let mut renderer = TranscriptBuffer::new(buffer.clone());
     let mut transcript = Transcript::default();

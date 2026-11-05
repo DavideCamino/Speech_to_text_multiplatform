@@ -1,5 +1,7 @@
+use super::text_zoom::ZoomGroup;
 use adw::prelude::*;
 use gtk::{Align, Orientation};
+use std::rc::Rc;
 
 pub fn column(spacing: i32) -> gtk::Box {
     gtk::Box::new(Orientation::Vertical, spacing)
@@ -20,6 +22,10 @@ pub fn text_view(editable: bool) -> gtk::TextView {
 }
 
 pub fn pane(title: &str, view: &impl IsA<gtk::Widget>) -> gtk::Box {
+    pane_with_zoom(title, view, &Rc::new(ZoomGroup::default()))
+}
+
+fn pane_with_zoom(title: &str, view: &impl IsA<gtk::Widget>, zoom: &Rc<ZoomGroup>) -> gtk::Box {
     let container = column(8);
     let label = gtk::Label::builder()
         .label(title)
@@ -35,6 +41,10 @@ pub fn pane(title: &str, view: &impl IsA<gtk::Widget>) -> gtk::Box {
         .build();
     scroll.add_css_class("card");
     container.append(&scroll);
+    if let Some(text) = view.as_ref().downcast_ref::<gtk::TextView>() {
+        super::text_zoom::install(text, &container, zoom);
+        text.set_tooltip_text(Some("Ctrl + mouse wheel: change font size"));
+    }
     container
 }
 
@@ -55,7 +65,7 @@ pub struct MainView {
 }
 
 impl MainView {
-    pub fn new() -> Self {
+    pub(super) fn new(recognized_zoom: &Rc<ZoomGroup>) -> Self {
         let root = column(12);
         root.set_margin_top(18);
         root.set_margin_bottom(18);
@@ -85,7 +95,7 @@ impl MainView {
             .foreground("#888888")
             .build();
         transcript.buffer().tag_table().add(&provisional);
-        root.append(&pane("Transcript", &transcript));
+        root.append(&pane_with_zoom("Transcript", &transcript, recognized_zoom));
         let status = gtk::Label::builder()
             .label("Select a model in Settings, then open an audio file or record.")
             .halign(Align::Start)
@@ -139,7 +149,7 @@ pub struct RewriteView {
 }
 
 impl RewriteView {
-    pub fn new() -> Self {
+    pub(super) fn new(recognized_zoom: &Rc<ZoomGroup>) -> Self {
         let root = column(12);
         root.set_margin_top(18);
         root.set_margin_bottom(18);
@@ -186,7 +196,7 @@ impl RewriteView {
         let panes = gtk::Box::new(Orientation::Horizontal, 12);
         panes.set_homogeneous(true);
         panes.set_vexpand(true);
-        panes.append(&pane("Original", &source));
+        panes.append(&pane_with_zoom("Original", &source, recognized_zoom));
         panes.append(&pane("Result", &result));
         root.append(&panes);
         let footer = gtk::Box::new(Orientation::Horizontal, 8);

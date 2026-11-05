@@ -5,6 +5,7 @@ mod menu;
 mod models;
 mod preferences;
 mod rewrite;
+mod text_zoom;
 mod transcript_buffer;
 mod views;
 
@@ -140,8 +141,9 @@ pub fn build(application: &adw::Application) {
 }
 
 fn build_loaded(application: &adw::Application, settings: Settings, load_error: Option<String>) {
-    let main = MainView::new();
-    let rewrite = RewriteView::new();
+    let recognized_zoom = Rc::new(text_zoom::ZoomGroup::default());
+    let main = MainView::new(&recognized_zoom);
+    let rewrite = RewriteView::new(&recognized_zoom);
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::SlideLeftRight)
         .build();
