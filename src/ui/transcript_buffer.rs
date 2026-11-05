@@ -11,6 +11,7 @@ pub(super) struct TranscriptBuffer {
     // Keep boundary whitespace without displaying trailing whitespace. It is
     // emitted only when another finalized/provisional fragment follows it.
     trailing_whitespace: String,
+    append_separator: bool,
 }
 
 impl TranscriptBuffer {
@@ -22,6 +23,7 @@ impl TranscriptBuffer {
             rendered_segments: 0,
             provisional: String::new(),
             trailing_whitespace: String::new(),
+            append_separator: false,
         }
     }
 
@@ -33,6 +35,27 @@ impl TranscriptBuffer {
         self.rendered_segments = 0;
         self.provisional.clear();
         self.trailing_whitespace.clear();
+        self.append_separator = false;
+    }
+
+    /// Begin another audio job after idle edits. The left-gravity mark can
+    /// remain before text typed at the old end, so explicitly move it past all
+    /// edited text before a provisional suffix is inserted/replaced.
+    pub fn prepare_append(&mut self) {
+        self.buffer
+            .move_mark(&self.finalized_end, &self.buffer.end_iter());
+        self.provisional.clear();
+        self.append_separator = false;
+        let mut end = self.buffer.end_iter();
+        if end.backward_char() {
+            if end.char().is_whitespace() {
+                self.trailing_whitespace.clear();
+            } else if self.trailing_whitespace.is_empty() {
+                self.append_separator = true;
+            }
+        } else {
+            self.trailing_whitespace.clear();
+        }
     }
 
     pub fn update(&mut self, transcript: &Transcript, provisional: &str) {
@@ -49,6 +72,20 @@ impl TranscriptBuffer {
             return;
         }
 
+        // Independent audio jobs need a word boundary, unless recognition or
+        // the edited prefix already provides whitespace. Re-evaluate while
+        // provisional hypotheses change; never add spaces between normal chunks.
+        if self.append_separator {
+            let next = if new_text.is_empty() {
+                provisional
+            } else {
+                &new_text
+            };
+            self.trailing_whitespace.clear();
+            if !next.starts_with(char::is_whitespace) {
+                self.trailing_whitespace.push(' ');
+            }
+        }
         let boundary = self.buffer.iter_at_mark(&self.finalized_end).offset();
         // GTK's selection marks have right gravity. Explicitly preserve a
         // selection in finalized text, including one ending at the boundary,
@@ -70,6 +107,7 @@ impl TranscriptBuffer {
             self.buffer.delete(&mut start, &mut end);
         }
         if !new_text.is_empty() {
+            self.append_separator = false;
             let mut text = std::mem::take(&mut self.trailing_whitespace);
             text.push_str(&new_text);
             let text = if boundary == 0 {

@@ -279,6 +279,14 @@ python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
 
 The backend uses in-process Symphonia decoding, whisper.cpp, platform-specific preferences, and GTK/GIO file dialogs/clipboard. Windows CPU/Vulkan release compilation and runtime assembly have been exercised locally. The GitHub-hosted installer workflow must still be validated on its first run. GPU inference and clean-machine compatibility require manual testing. macOS runtime bundling, microphone usage description, signing, and installer integration remain future work.
 
+## Editing a transcript
+
+The main **Transcript** box is editable whenever transcription is stopped, including after completion or cancellation. Editing and its text cursor are disabled while a transcription job is running or shutting down. **Copy**, **Save TXT**, and **Rewrite** use the text currently in this box, including manual corrections. Manual edits count as unsaved changes; exporting the original subtitles does not mark those corrections saved.
+
+**Save Subtitles** always exports the original recognized text and timestamps, not manual corrections. Deleting or replacing text in the plain-text box does not delete subtitle cues. In the rewrite window, **Original** and **Result** remain read-only and **Instructions** remains editable.
+
+When starting another transcription, **Append** keeps the edited text and adds the new recognition after it; subtitle timestamps continue from the original subtitle timeline. **Replace** clears both the edited transcript and original subtitle data. Manually entered text also triggers the replace/append confirmation, even if no audio has been transcribed yet. Text is not saved automatically.
+
 ## LLM rewriting (first draft)
 
 1. Start a llama.cpp server with a chat-capable GGUF model, for example:

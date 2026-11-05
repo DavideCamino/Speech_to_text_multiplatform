@@ -70,6 +70,13 @@ fn discover_devices(
     background(discover)
 }
 
+#[derive(Clone, Copy)]
+enum ExportKind {
+    TranscriptText,
+    Subtitles,
+    Rewrite,
+}
+
 struct App {
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
@@ -93,6 +100,8 @@ struct App {
     device_discovery: RefCell<Option<DeviceDiscovery>>,
     recording: Cell<bool>,
     dirty: Cell<bool>,
+    text_dirty: Cell<bool>,
+    rendering_transcript: Cell<bool>,
     rewrite_dirty: Cell<bool>,
     allow_close: Cell<bool>,
 }
@@ -200,6 +209,8 @@ fn build_loaded(application: &adw::Application, settings: Settings, load_error: 
         device_discovery: RefCell::default(),
         recording: Cell::new(false),
         dirty: Cell::new(false),
+        text_dirty: Cell::new(false),
+        rendering_transcript: Cell::new(false),
         rewrite_dirty: Cell::new(false),
         allow_close: Cell::new(false),
     });
@@ -242,7 +253,21 @@ fn on_click(button: &gtk::Button, app: &Rc<App>, action: impl Fn(Rc<App>) + 'sta
 }
 
 impl App {
+    fn connect_transcript_editing(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.main.transcript.buffer().connect_changed(move |_| {
+            if let Some(app) = weak.upgrade()
+                && !app.rendering_transcript.get()
+            {
+                app.dirty.set(true);
+                app.text_dirty.set(true);
+                app.refresh();
+            }
+        });
+    }
+
     fn connect(self: &Rc<Self>) {
+        self.connect_transcript_editing();
         self.connect_menu();
         let weak = Rc::downgrade(self);
         self.window.connect_is_active_notify(move |window| {
@@ -331,15 +356,15 @@ impl App {
         on_click(&self.main.copy, self, |app| {
             app.window
                 .clipboard()
-                .set_text(&app.transcript.borrow().text())
+                .set_text(&buffer_text(&app.main.transcript))
         });
         on_click(&self.main.txt, self, |app| {
-            let content = app.transcript.borrow().text();
-            app.export("transcript.txt", content, false);
+            let content = buffer_text(&app.main.transcript);
+            app.export("transcript.txt", content, ExportKind::TranscriptText);
         });
         on_click(&self.main.srt, self, |app| {
             let content = app.transcript.borrow().srt();
-            app.export("transcript.srt", content, false);
+            app.export("transcript.srt", content, ExportKind::Subtitles);
         });
         on_click(&self.main.rewrite, self, |app| app.enter_rewrite());
         on_click(&self.preferences.llm_test, self, |app| app.test_llm());
@@ -384,11 +409,11 @@ impl App {
             app.export(
                 "rewritten.txt",
                 rewrite::plain_text(&app.rewrite_markdown()),
-                true,
+                ExportKind::Rewrite,
             )
         });
         on_click(&self.rewrite.markdown, self, |app| {
-            app.export("rewritten.md", app.rewrite_markdown(), true)
+            app.export("rewritten.md", app.rewrite_markdown(), ExportKind::Rewrite)
         });
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
@@ -623,7 +648,10 @@ impl App {
     fn refresh(&self) {
         let busy = self.busy();
         let has_model = self.model_available.get();
-        let has_text = !self.transcript.borrow().segments.is_empty();
+        let has_text = !buffer_text(&self.main.transcript).trim().is_empty();
+        let idle = self.job.borrow().is_none() && !self.closing.get();
+        self.main.transcript.set_editable(idle);
+        self.main.transcript.set_cursor_visible(idle);
         let downloading = self.download.borrow().is_some();
         self.preferences
             .select_model
@@ -678,7 +706,10 @@ impl App {
         self.main
             .cancel
             .set_sensitive((self.job.borrow().is_some() || downloading) && !cancelling);
-        for button in [&self.main.copy, &self.main.txt, &self.main.srt] {
+        self.main
+            .srt
+            .set_sensitive(!self.transcript.borrow().segments.is_empty() && !busy);
+        for button in [&self.main.copy, &self.main.txt] {
             button.set_sensitive(has_text && !busy);
         }
         self.main.rewrite.set_sensitive(has_text && !busy);
@@ -716,9 +747,27 @@ impl App {
     }
 
     fn render_transcript(&self) {
+        self.rendering_transcript.set(true);
         self.transcript_buffer
             .borrow_mut()
             .update(&self.transcript.borrow(), &self.provisional.borrow());
+        self.rendering_transcript.set(false);
+        self.refresh();
+    }
+
+    fn clear_transcript(&self) {
+        self.rendering_transcript.set(true);
+        *self.transcript.borrow_mut() = Transcript::default();
+        self.transcript_buffer.borrow_mut().reset();
+        self.provisional.borrow_mut().clear();
+        self.rendering_transcript.set(false);
+        self.dirty.set(false);
+        self.text_dirty.set(false);
+    }
+
+    fn has_transcript(&self) -> bool {
+        !self.transcript.borrow().segments.is_empty()
+            || !buffer_text(&self.main.transcript).is_empty()
     }
 
     fn request_start(self: &Rc<Self>, source: Source) {
@@ -736,7 +785,7 @@ impl App {
             );
             return;
         }
-        if self.transcript.borrow().segments.is_empty() {
+        if !self.has_transcript() {
             self.start(source, false);
             return;
         }
@@ -763,9 +812,9 @@ impl App {
             return;
         }
         if !append {
-            *self.transcript.borrow_mut() = Transcript::default();
-            self.transcript_buffer.borrow_mut().reset();
-            self.dirty.set(false);
+            self.clear_transcript();
+        } else {
+            self.transcript_buffer.borrow_mut().prepare_append();
         }
         self.provisional.borrow_mut().clear();
         self.render_transcript();
@@ -780,33 +829,41 @@ impl App {
         self.refresh();
     }
 
-    fn export(self: &Rc<Self>, name: &str, content: String, rewrite: bool) {
+    fn export(self: &Rc<Self>, name: &str, content: String, kind: ExportKind) {
         let weak = Rc::downgrade(self);
-        // Compare snapshots so an asynchronous save cannot mark newer text saved.
-        let snapshot = if rewrite {
-            self.rewrite_markdown()
-        } else {
-            content.clone()
+        // TXT rewrite exports contain stripped text, not the authoritative Markdown.
+        let snapshot = match kind {
+            ExportKind::Rewrite => self.rewrite_markdown(),
+            _ => content.clone(),
         };
         dialogs::save(&self.window, name, content, move || {
             if let Some(app) = weak.upgrade() {
-                if rewrite {
-                    if app.rewrite_markdown() == snapshot {
-                        app.rewrite_dirty.set(false);
-                    }
-                } else {
-                    let transcript = app.transcript.borrow();
-                    if transcript.text() == snapshot || transcript.srt() == snapshot {
-                        app.dirty.set(false);
-                    }
-                }
+                app.mark_export_saved(kind, &snapshot);
                 app.main.status.set_text("Export saved.");
             }
         });
     }
 
+    fn mark_export_saved(&self, kind: ExportKind, snapshot: &str) {
+        match kind {
+            ExportKind::Rewrite if self.rewrite_markdown() == snapshot => {
+                self.rewrite_dirty.set(false);
+            }
+            ExportKind::TranscriptText if buffer_text(&self.main.transcript) == snapshot => {
+                self.dirty.set(false);
+                self.text_dirty.set(false);
+            }
+            ExportKind::Subtitles
+                if !self.text_dirty.get() && self.transcript.borrow().srt() == snapshot =>
+            {
+                self.dirty.set(false);
+            }
+            _ => {}
+        }
+    }
+
     fn enter_rewrite(self: &Rc<Self>) {
-        let source = self.transcript.borrow().text();
+        let source = buffer_text(&self.main.transcript);
         if source != buffer_text(&self.rewrite.source) {
             if self.rewrite_dirty.get() {
                 let weak = Rc::downgrade(self);
@@ -835,7 +892,7 @@ impl App {
         self.rewrite
             .source
             .buffer()
-            .set_text(&self.transcript.borrow().text());
+            .set_text(&buffer_text(&self.main.transcript));
         self.rewrite_state.borrow_mut().markdown.clear();
         self.rewrite.renderer.borrow_mut().reset();
         self.rewrite.status.set_text("Ready");

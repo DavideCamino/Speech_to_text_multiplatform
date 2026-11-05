@@ -89,13 +89,14 @@ impl MainView {
         meter.set_tooltip_text(Some("Microphone input level"));
         actions.append(&meter);
         root.append(&actions);
-        let transcript = text_view(false);
+        let transcript = text_view(true);
         let provisional = gtk::TextTag::builder()
             .name("provisional")
             .foreground("#888888")
             .build();
         transcript.buffer().tag_table().add(&provisional);
         root.append(&pane_with_zoom("Transcript", &transcript, recognized_zoom));
+        transcript.set_tooltip_text(Some("Edit when transcription is stopped. Copy, TXT, and Rewrite use this text; subtitles keep the original recognition. Ctrl + mouse wheel: change font size"));
         let status = gtk::Label::builder()
             .label("Select a model in Settings, then open an audio file or record.")
             .halign(Align::Start)
@@ -109,6 +110,9 @@ impl MainView {
         let copy = gtk::Button::with_label("Copy");
         let txt = gtk::Button::with_label("Save TXT…");
         let srt = gtk::Button::with_label("Save Subtitles…");
+        srt.set_tooltip_text(Some(
+            "Export the original recognized text and timestamps, without manual transcript edits",
+        ));
         let rewrite = gtk::Button::with_label("Rewrite →");
         rewrite.add_css_class("suggested-action");
         for button in [&copy, &txt, &srt, &rewrite] {

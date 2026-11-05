@@ -20,6 +20,7 @@ fn settings_pages_and_menu_surfaces_build() {
     device_discovery_states(&parent);
     model_library_window(&parent);
     rewrite_generation_states(&parent);
+    editable_transcript();
     background_filesystem_states();
     let compiled = transcription::compiled_gpu_backends();
     let settings = Settings {
@@ -156,6 +157,8 @@ fn test_app(parent: &adw::ApplicationWindow) -> Rc<App> {
         device_discovery: RefCell::default(),
         recording: Cell::new(false),
         dirty: Cell::new(false),
+        text_dirty: Cell::new(false),
+        rendering_transcript: Cell::new(false),
         rewrite_dirty: Cell::new(false),
         allow_close: Cell::new(false),
     })
@@ -226,6 +229,179 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     assert!(app.rewrite_markdown().is_empty());
     assert!(buffer_text(&app.rewrite.result).is_empty());
     assert!(!app.rewrite.copy.is_sensitive());
+}
+
+fn editable_transcript() {
+    use crate::transcript::Segment;
+    let parent = adw::ApplicationWindow::builder().build();
+    let app = test_app(&parent);
+    app.stack.add_named(&app.main.root, Some("main"));
+    app.stack.add_named(&app.rewrite.root, Some("rewrite"));
+    app.connect();
+    app.refresh();
+    assert!(app.main.transcript.is_editable());
+    assert!(app.main.transcript.is_cursor_visible());
+    assert!(!app.rewrite.source.is_editable());
+    assert!(!app.rewrite.result.is_editable());
+    assert!(!app.main.srt.is_sensitive());
+
+    app.transcript.borrow_mut().append(vec![Segment {
+        start_ms: 0,
+        end_ms: 1000,
+        text: "Recognized words".into(),
+    }]);
+    app.dirty.set(true);
+    app.render_transcript();
+    assert!(
+        !app.text_dirty.get(),
+        "renderer changes are not manual edits"
+    );
+    let original_srt = app.transcript.borrow().srt();
+    app.mark_export_saved(ExportKind::Subtitles, &original_srt);
+    assert!(!app.dirty.get());
+    let buffer = app.main.transcript.buffer();
+    buffer.insert(&mut buffer.end_iter(), " — corrected 世界");
+    let edited = buffer_text(&app.main.transcript);
+    assert!(app.dirty.get() && app.text_dirty.get());
+    assert_eq!(app.transcript.borrow().srt(), original_srt);
+    assert!(app.main.txt.is_sensitive() && app.main.copy.is_sensitive());
+    app.main.copy.emit_clicked();
+    let copied = gtk::glib::MainContext::default()
+        .block_on(app.window.clipboard().read_text_future())
+        .unwrap()
+        .unwrap();
+    assert_eq!(copied, edited);
+    app.enter_rewrite();
+    assert_eq!(buffer_text(&app.rewrite.source), edited);
+    assert!(!app.rewrite.source.is_editable());
+    app.stack.set_visible_child_name("main");
+    buffer.insert(&mut buffer.end_iter(), "!");
+    app.mark_export_saved(ExportKind::TranscriptText, &edited);
+    assert!(
+        app.dirty.get(),
+        "an older TXT save must not clear newer edits"
+    );
+    app.mark_export_saved(ExportKind::Subtitles, &original_srt);
+    assert!(
+        app.dirty.get(),
+        "saving original subtitles does not save manual edits"
+    );
+    app.mark_export_saved(
+        ExportKind::TranscriptText,
+        &buffer_text(&app.main.transcript),
+    );
+    assert!(!app.dirty.get() && !app.text_dirty.get());
+    buffer.insert(&mut buffer.end_iter(), " More corrections.");
+    let edited_prefix = buffer_text(&app.main.transcript);
+
+    // Append follows the original timestamp timeline, but its rendering starts
+    // after the edited buffer, including text inserted at the old end mark.
+    app.transcript_buffer.borrow_mut().prepare_append();
+    let (tx, events) = mpsc::sync_channel(8);
+    let stop = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(AtomicBool::new(false));
+    *app.job.borrow_mut() = Some(Job {
+        events,
+        stop: stop.clone(),
+        cancel: cancel.clone(),
+    });
+    app.refresh();
+    assert!(!app.main.transcript.is_editable());
+    assert!(!app.main.transcript.is_cursor_visible());
+    stop.store(true, Ordering::Relaxed);
+    cancel.store(true, Ordering::Relaxed);
+    app.refresh();
+    assert!(
+        !app.main.transcript.is_editable(),
+        "stop/cancel must wait for worker completion"
+    );
+    tx.send(Event::Provisional("preview".into())).unwrap();
+    app.poll();
+    assert_eq!(
+        buffer_text(&app.main.transcript),
+        format!("{edited_prefix} preview")
+    );
+    tx.send(Event::Final(vec![Segment {
+        start_ms: 1000,
+        end_ms: 2000,
+        text: "next audio".into(),
+    }]))
+    .unwrap();
+    tx.send(Event::Provisional(String::new())).unwrap();
+    tx.send(Event::Finished(Ok(()))).unwrap();
+    app.poll();
+    assert!(app.main.transcript.is_editable());
+    assert_eq!(
+        buffer_text(&app.main.transcript),
+        format!("{edited_prefix} next audio")
+    );
+    assert_eq!(app.transcript.borrow().end_ms(), 2000);
+    let srt = app.transcript.borrow().srt();
+    assert!(srt.starts_with(&original_srt));
+    assert!(srt.contains("next audio") && !srt.contains("corrected"));
+    assert!(app.text_dirty.get());
+
+    buffer.set_text("");
+    assert!(!app.main.txt.is_sensitive() && !app.main.rewrite.is_sensitive());
+    assert!(
+        app.main.srt.is_sensitive(),
+        "deleting plain text must not remove subtitles"
+    );
+    app.clear_transcript();
+    app.render_transcript();
+    assert!(!app.dirty.get() && !app.text_dirty.get());
+    assert!(!app.main.srt.is_sensitive());
+    buffer.set_text("Manually entered text only");
+    assert!(app.has_transcript());
+    assert!(app.main.txt.is_sensitive() && app.main.rewrite.is_sensitive());
+    assert!(!app.main.srt.is_sensitive());
+    app.request_start(Source::File(PathBuf::from("not-opened.wav")));
+    let dialog = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .find(|dialog| dialog.heading().as_deref() == Some("Start a new transcription?"))
+        .expect("manual-only text requires replacement confirmation");
+    dialog.response("cancel");
+    dialog.close();
+    assert!(app.job.borrow().is_none());
+    assert_eq!(
+        buffer_text(&app.main.transcript),
+        "Manually entered text only"
+    );
+    app.clear_transcript();
+    assert!(buffer_text(&app.main.transcript).is_empty());
+    assert!(!app.has_transcript());
+    for (prefix, preview, recognized, expected) in [
+        ("corrected", " preview", "next", "corrected next"),
+        ("corrected", "preview", " next", "corrected next"),
+        ("corrected\n", "preview", "next", "corrected\nnext"),
+        ("", "preview", "next", "next"),
+    ] {
+        let buffer = gtk::TextBuffer::new(None);
+        buffer.create_tag(Some("provisional"), &[]);
+        let mut renderer = transcript_buffer::TranscriptBuffer::new(buffer.clone());
+        let mut original = Transcript::default();
+        original.append(vec![Segment {
+            start_ms: 0,
+            end_ms: 1000,
+            text: "old".into(),
+        }]);
+        renderer.update(&original, "");
+        buffer.set_text(prefix);
+        renderer.prepare_append();
+        renderer.update(&original, preview);
+        original.append(vec![Segment {
+            start_ms: 1000,
+            end_ms: 2000,
+            text: recognized.into(),
+        }]);
+        renderer.update(&original, "");
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            expected
+        );
+    }
+    parent.destroy();
 }
 
 fn wait_for(mut condition: impl FnMut() -> bool) {
