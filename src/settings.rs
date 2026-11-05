@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::Write,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, Sender},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -82,10 +83,171 @@ impl Settings {
     }
 }
 
+/// A single writer serializes atomic saves. Queued snapshots may be coalesced,
+/// but an older save can never finish after a newer one and overwrite it.
+pub(crate) struct SaveWorker {
+    requests: Sender<(u64, Settings)>,
+    results: Receiver<(u64, Result<(), String>)>,
+    latest: u64,
+    pending: bool,
+}
+
+impl SaveWorker {
+    pub fn new() -> Self {
+        Self::with_save(|settings| settings.save())
+    }
+
+    pub(crate) fn with_save(mut save: impl FnMut(Settings) -> Result<()> + Send + 'static) -> Self {
+        let (requests, incoming) = mpsc::channel::<(u64, Settings)>();
+        let (finished, results) = mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(mut request) = incoming.recv() {
+                // Only the newest queued snapshot needs to reach disk.
+                for newer in incoming.try_iter() {
+                    request = newer;
+                }
+                let (revision, settings) = request;
+                let result = save(settings).map_err(|error| format!("{error:#}"));
+                if finished.send((revision, result)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            requests,
+            results,
+            latest: 0,
+            pending: false,
+        }
+    }
+
+    pub fn submit(&mut self, settings: Settings) -> Result<(), String> {
+        self.latest += 1;
+        self.requests
+            .send((self.latest, settings))
+            .map_err(|_| "Preferences worker stopped unexpectedly".to_owned())?;
+        self.pending = true;
+        Ok(())
+    }
+
+    /// Report only the latest requested save, never a stale success/error.
+    pub fn poll(&mut self) -> Option<Result<(), String>> {
+        loop {
+            match self.results.try_recv() {
+                Ok((revision, result)) if revision == self.latest => {
+                    self.pending = false;
+                    return Some(result);
+                }
+                Ok(_) => {}
+                Err(mpsc::TryRecvError::Empty) => return None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return if std::mem::take(&mut self.pending) {
+                        Some(Err("Preferences worker stopped unexpectedly".into()))
+                    } else {
+                        None
+                    };
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transcription::GpuBackend;
+
+    #[test]
+    fn background_saves_are_ordered_and_ignore_stale_results() {
+        use std::time::{Duration, Instant};
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().to_owned();
+        let ui_thread = std::thread::current().id();
+        let (entered, started) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let mut worker = SaveWorker::with_save(move |settings| {
+            assert_ne!(std::thread::current().id(), ui_thread);
+            entered.send(settings.language.clone()).unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            settings.save_in(&directory)
+        });
+        let snapshot = |language: &str| Settings {
+            language: Some(language.into()),
+            ..Settings::default()
+        };
+        worker.submit(snapshot("en")).unwrap();
+        assert_eq!(
+            started
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .as_deref(),
+            Some("en")
+        );
+        // Submitting and polling stay nonblocking while the disk writer waits.
+        worker.submit(snapshot("de")).unwrap();
+        worker.submit(snapshot("fr")).unwrap();
+        assert!(worker.poll().is_none());
+        release.send(()).unwrap();
+        assert_eq!(
+            started
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .as_deref(),
+            Some("fr")
+        );
+        // The older save completed, but the latest is still pending.
+        assert!(worker.poll().is_none());
+        assert!(worker.pending);
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = worker.poll() {
+                result.unwrap();
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!worker.pending);
+        let saved: Settings =
+            serde_json::from_slice(&std::fs::read(root.path().join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved.language.as_deref(), Some("fr"));
+    }
+
+    #[test]
+    fn background_save_errors_and_worker_disconnect_are_reported() {
+        use std::time::{Duration, Instant};
+        let mut worker = SaveWorker::with_save(|_| anyhow::bail!("simulated disk failure"));
+        worker.submit(Settings::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = worker.poll() {
+                assert!(result.unwrap_err().contains("simulated disk failure"));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (requests, incoming) = mpsc::channel();
+        let (finished, results) = mpsc::channel();
+        let mut disconnected = SaveWorker {
+            requests,
+            results,
+            latest: 0,
+            pending: false,
+        };
+        disconnected.submit(Settings::default()).unwrap();
+        drop(incoming);
+        drop(finished);
+        assert!(
+            disconnected
+                .poll()
+                .unwrap()
+                .unwrap_err()
+                .contains("stopped unexpectedly")
+        );
+    }
 
     #[test]
     fn save_creates_directory_and_writes_valid_preferences() {

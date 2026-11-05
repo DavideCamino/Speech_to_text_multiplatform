@@ -52,15 +52,20 @@ impl Drop for ModelJob {
 
 type DeviceDiscovery = Receiver<Result<Vec<String>, String>>;
 type ModelScan = Receiver<Result<Vec<PathBuf>, String>>;
+type DownloadCheck = Receiver<Result<(usize, PathBuf, bool), String>>;
+
+fn background<T: Send + 'static>(operation: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
+    let (tx, events) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(operation());
+    });
+    events
+}
 
 fn discover_devices(
     discover: impl FnOnce() -> Result<Vec<String>, String> + Send + 'static,
 ) -> DeviceDiscovery {
-    let (tx, events) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let _ = tx.send(discover());
-    });
-    events
+    background(discover)
 }
 
 struct App {
@@ -70,6 +75,11 @@ struct App {
     preferences: preferences::Preferences,
     models: models::Models,
     model_scan: RefCell<Option<ModelScan>>,
+    model_check: RefCell<Option<Receiver<bool>>>,
+    model_available: Cell<bool>,
+    download_check: RefCell<Option<DownloadCheck>>,
+    settings_writer: RefCell<settings::SaveWorker>,
+    closing: Cell<bool>,
     rewrite: RewriteView,
     rewrite_state: RefCell<rewrite::State>,
     settings: RefCell<Settings>,
@@ -90,10 +100,46 @@ pub fn build(application: &adw::Application) {
         window.present();
         return;
     }
-    let (settings, load_error) = match Settings::load() {
-        Ok(settings) => (settings, None),
-        Err(error) => (Settings::default(), Some(format!("{error:#}"))),
-    };
+    let loading = adw::ApplicationWindow::builder()
+        .application(application)
+        .title("Speech2Text — Loading preferences…")
+        .default_width(600)
+        .default_height(400)
+        .content(
+            &gtk::Spinner::builder()
+                .spinning(true)
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .width_request(32)
+                .height_request(32)
+                .build(),
+        )
+        .build();
+    loading.present();
+    let events = background(|| Settings::load().map_err(|error| format!("{error:#}")));
+    let application = application.clone();
+    gtk::glib::timeout_add_local(Duration::from_millis(30), move || {
+        if !loading.is_visible() {
+            return gtk::glib::ControlFlow::Break;
+        }
+        let result = match events.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return gtk::glib::ControlFlow::Continue,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("Preferences worker stopped unexpectedly".into())
+            }
+        };
+        let (settings, error) = match result {
+            Ok(settings) => (settings, None),
+            Err(error) => (Settings::default(), Some(error)),
+        };
+        build_loaded(&application, settings, error);
+        loading.close();
+        gtk::glib::ControlFlow::Break
+    });
+}
+
+fn build_loaded(application: &adw::Application, settings: Settings, load_error: Option<String>) {
     let main = MainView::new();
     let rewrite = RewriteView::new();
     let stack = gtk::Stack::builder()
@@ -135,6 +181,11 @@ pub fn build(application: &adw::Application) {
         preferences,
         models,
         model_scan: RefCell::default(),
+        model_check: RefCell::default(),
+        model_available: Cell::new(false),
+        download_check: RefCell::default(),
+        settings_writer: RefCell::new(settings::SaveWorker::new()),
+        closing: Cell::new(false),
         rewrite,
         rewrite_state: RefCell::default(),
         settings: RefCell::new(settings),
@@ -190,6 +241,15 @@ fn on_click(button: &gtk::Button, app: &Rc<App>, action: impl Fn(Rc<App>) + 'sta
 impl App {
     fn connect(self: &Rc<Self>) {
         self.connect_menu();
+        let weak = Rc::downgrade(self);
+        self.window.connect_is_active_notify(move |window| {
+            if window.is_active()
+                && let Some(app) = weak.upgrade()
+                && !app.busy()
+            {
+                app.check_model();
+            }
+        });
         on_click(&self.preferences.device_refresh, self, |app| {
             app.refresh_devices()
         });
@@ -331,17 +391,18 @@ impl App {
         self.window.connect_close_request(move |_| {
             let Some(app) = weak.upgrade() else { return gtk::glib::Propagation::Proceed; };
             if app.allow_close.get() { return gtk::glib::Propagation::Proceed; }
+            if app.closing.get() { return gtk::glib::Propagation::Stop; }
             if app.busy() || app.dirty.get() || app.rewrite_dirty.get() {
                 let weak = Rc::downgrade(&app);
                 dialogs::confirm(&app.window, "Close Speech2Text?",
                     "Active work will be cancelled and any unexported text will be discarded. Audio and transcripts are not saved automatically.",
                     &[("close", "Discard and Close")], move |response| {
                         if response == "close" && let Some(app) = weak.upgrade() {
-                            app.persist_controls(); app.allow_close.set(true); app.window.close();
+                            app.begin_close();
                         }
                     });
                 gtk::glib::Propagation::Stop
-            } else { app.persist_controls(); gtk::glib::Propagation::Proceed }
+            } else { app.begin_close(); gtk::glib::Propagation::Stop }
         });
     }
 
@@ -401,7 +462,9 @@ impl App {
     }
 
     fn busy(&self) -> bool {
-        self.job.borrow().is_some()
+        self.closing.get()
+            || self.download_check.borrow().is_some()
+            || self.job.borrow().is_some()
             || self.download.borrow().is_some()
             || self.rewrite_state.borrow().job.is_some()
     }
@@ -413,10 +476,84 @@ impl App {
     }
 
     fn persist(&self) {
-        if let Err(error) = self.settings.borrow().save() {
-            self.main
-                .status
-                .set_text(&format!("Could not save preferences: {error:#}"));
+        let result = self
+            .settings_writer
+            .borrow_mut()
+            .submit(self.settings.borrow().clone());
+        if let Err(error) = result {
+            self.preferences_save_finished(Err(error));
+        }
+    }
+
+    fn begin_close(&self) {
+        self.closing.set(true);
+        self.window.set_sensitive(false);
+        self.main
+            .status
+            .set_text("Saving preferences before closing…");
+        self.job.borrow_mut().take();
+        self.recording.set(false);
+        self.main.meter.set_value(0.0);
+        self.download.borrow_mut().take();
+        self.download_check.borrow_mut().take();
+        self.rewrite_state.borrow_mut().job.take();
+        self.rewrite_state.borrow_mut().test.take();
+        // The window stays alive until the latest save completes. Never join
+        // the writer or block GTK, and never lose the final save at process exit.
+        self.persist_controls();
+    }
+
+    fn preferences_save_finished(&self, result: Result<(), String>) {
+        match result {
+            Ok(()) if self.closing.get() => {
+                self.allow_close.set(true);
+                self.window.close();
+            }
+            Ok(()) => {}
+            Err(error) => {
+                self.main
+                    .status
+                    .set_text(&format!("Could not save preferences: {error}"));
+                if self.closing.replace(false) {
+                    self.window.set_sensitive(true);
+                    self.refresh();
+                    dialogs::message(&self.window, "Could not save preferences", &error);
+                }
+            }
+        }
+    }
+
+    fn poll_preferences_save(&self) {
+        let result = self.settings_writer.borrow_mut().poll();
+        if let Some(result) = result {
+            self.preferences_save_finished(result);
+        }
+    }
+
+    fn check_model(&self) {
+        if self.model_check.borrow().is_some() {
+            return;
+        }
+        let path = self.settings.borrow().model.clone();
+        self.model_available.set(false);
+        *self.model_check.borrow_mut() = path.map(|path| background(move || path.is_file()));
+        self.refresh();
+    }
+
+    fn poll_model_check(&self) {
+        let result =
+            self.model_check
+                .borrow()
+                .as_ref()
+                .and_then(|events| match events.try_recv() {
+                    Ok(available) => Some(available),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some(false),
+                });
+        if let Some(available) = result {
+            self.model_check.borrow_mut().take();
+            self.model_available.set(available);
+            self.refresh();
         }
     }
 
@@ -474,16 +611,15 @@ impl App {
                 .map(|p| p.to_string_lossy())
                 .as_deref(),
         );
+        drop(settings);
+        // Replacing the receiver discards late results for an older selection.
+        self.model_check.borrow_mut().take();
+        self.check_model();
     }
 
     fn refresh(&self) {
         let busy = self.busy();
-        let has_model = self
-            .settings
-            .borrow()
-            .model
-            .as_ref()
-            .is_some_and(|p| p.is_file());
+        let has_model = self.model_available.get();
         let has_text = !self.transcript.borrow().segments.is_empty();
         let downloading = self.download.borrow().is_some();
         self.preferences
@@ -823,25 +959,45 @@ impl App {
         let Some(model) = model::CATALOG.get(index) else {
             return;
         };
-        let target = match settings::model_dir().and_then(|directory| {
-            let target = directory.join(model.file);
-            Ok((target.try_exists()?, target))
-        }) {
-            Ok((false, _)) => {
-                self.start_model_task(ModelTask::Download(index, model::Replacement::Never));
-                return;
-            }
-            Ok((true, target)) => target,
-            Err(error) => {
-                dialogs::message(
+        *self.download_check.borrow_mut() = Some(background(move || {
+            (|| -> anyhow::Result<_> {
+                let target = settings::model_dir()?.join(model.file);
+                let exists = target.try_exists()?;
+                Ok((index, target, exists))
+            })()
+            .map_err(|error| format!("{error:#}"))
+        }));
+        self.models.status.set_text("Checking model destination…");
+        self.refresh();
+    }
+
+    fn poll_download_check(self: &Rc<Self>) {
+        let result =
+            self.download_check
+                .borrow()
+                .as_ref()
+                .and_then(|events| match events.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("Model destination worker stopped unexpectedly".into()))
+                    }
+                });
+        if let Some(result) = result {
+            self.download_check.borrow_mut().take();
+            self.refresh();
+            match result {
+                Ok((index, target, true)) => self.ask_replace_download(index, target),
+                Ok((index, _, false)) => {
+                    self.start_model_task(ModelTask::Download(index, model::Replacement::Never))
+                }
+                Err(error) => dialogs::message(
                     &self.dialog_parent(),
                     "Cannot check model destination",
-                    &format!("{error:#}"),
-                );
-                return;
+                    &error,
+                ),
             }
-        };
-        self.ask_replace_download(index, target);
+        }
     }
 
     fn ask_replace_download(self: &Rc<Self>, index: usize, target: PathBuf) {
@@ -926,6 +1082,12 @@ impl App {
     }
 
     fn poll(self: &Rc<Self>) {
+        self.poll_preferences_save();
+        if self.allow_close.get() {
+            return;
+        }
+        self.poll_model_check();
+        self.poll_download_check();
         self.poll_rewrite();
         let devices =
             self.device_discovery
@@ -1033,6 +1195,7 @@ impl App {
                         .as_ref()
                         .is_some_and(|j| j.cancel.load(Ordering::Relaxed));
                     self.job.borrow_mut().take();
+                    self.check_model();
                     self.recording.set(false);
                     self.main.meter.set_value(0.0);
                     match result {

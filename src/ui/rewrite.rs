@@ -137,6 +137,7 @@ impl App {
             .as_ref()
             .map(drain)
             .unwrap_or_default();
+        let mut controls_changed = !test_events.is_empty();
         for event in test_events {
             if let llm::Event::Finished(result) = event {
                 self.rewrite_state.borrow_mut().test.take();
@@ -153,6 +154,7 @@ impl App {
             .as_ref()
             .map(drain)
             .unwrap_or_default();
+        controls_changed |= !events.is_empty();
         let mut changed = false;
         for event in events {
             match event {
@@ -187,7 +189,9 @@ impl App {
                 .result
                 .set_markdown(display_markdown(&self.rewrite_state.borrow().markdown));
         }
-        self.refresh();
+        if controls_changed {
+            self.refresh();
+        }
     }
     pub(super) fn rewrite_markdown(&self) -> String {
         self.rewrite_state.borrow().markdown.clone()

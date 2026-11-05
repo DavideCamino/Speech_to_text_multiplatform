@@ -14,6 +14,7 @@ fn settings_pages_and_menu_surfaces_build() {
     device_discovery_states(&parent);
     model_library_window(&parent);
     rewrite_generation_states(&parent);
+    background_filesystem_states();
     let compiled = transcription::compiled_gpu_backends();
     let settings = Settings {
         gpu_backend: compiled.last().copied(),
@@ -70,13 +71,12 @@ fn settings_pages_and_menu_surfaces_build() {
     }
 }
 
-fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
-    use crate::llm;
+fn test_app(parent: &adw::ApplicationWindow) -> Rc<App> {
     let settings = Settings::default();
     let main = MainView::new();
     let preferences = preferences::Preferences::new(parent, &settings);
     let models = models::Models::new(&preferences.window);
-    let app = Rc::new(App {
+    Rc::new(App {
         window: parent.clone(),
         stack: gtk::Stack::new(),
         transcript_buffer: RefCell::new(transcript_buffer::TranscriptBuffer::new(
@@ -86,6 +86,11 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
         preferences,
         models,
         model_scan: RefCell::default(),
+        model_check: RefCell::default(),
+        model_available: Cell::new(false),
+        download_check: RefCell::default(),
+        settings_writer: RefCell::new(settings::SaveWorker::with_save(|_| Ok(()))),
+        closing: Cell::new(false),
         rewrite: RewriteView::new(),
         rewrite_state: RefCell::default(),
         settings: RefCell::new(settings),
@@ -98,7 +103,12 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
         dirty: Cell::new(false),
         rewrite_dirty: Cell::new(false),
         allow_close: Cell::new(false),
-    });
+    })
+}
+
+fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
+    use crate::llm;
+    let app = test_app(parent);
     // Asking to replace a model must not start work until explicit approval.
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join(model::CATALOG[0].file);
@@ -164,6 +174,115 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     assert!(app.rewrite_markdown().is_empty());
     assert!(app.rewrite.result.markdown().is_empty());
     assert!(!app.rewrite.copy.is_sensitive());
+}
+
+fn wait_for(mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !condition() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background operation timed out"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn background_filesystem_states() {
+    let parent = adw::ApplicationWindow::builder().build();
+    let app = test_app(&parent);
+    app.connect();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("model.bin");
+    std::fs::write(&path, b"test model").unwrap();
+    app.settings.borrow_mut().model = Some(path.clone());
+    app.update_model_label();
+    assert!(!app.main.open.is_sensitive());
+    wait_for(|| {
+        app.poll_model_check();
+        app.model_check.borrow().is_none()
+    });
+    assert!(app.main.open.is_sensitive());
+
+    // Idle refreshes must use cached state, not stat the model again.
+    std::fs::remove_file(&path).unwrap();
+    for _ in 0..100 {
+        app.refresh();
+    }
+    assert!(app.main.open.is_sensitive());
+    assert!(app.model_check.borrow().is_none());
+    app.check_model();
+    wait_for(|| {
+        app.poll_model_check();
+        app.model_check.borrow().is_none()
+    });
+    assert!(!app.main.open.is_sensitive());
+
+    // A stalled old check must not block polling or replace a newer result.
+    let (release, resume) = mpsc::sync_channel(1);
+    *app.model_check.borrow_mut() = Some(background(move || {
+        resume.recv_timeout(Duration::from_secs(5)).unwrap();
+        false
+    }));
+    for _ in 0..100 {
+        app.poll_model_check();
+        app.refresh();
+    }
+    std::fs::write(&path, b"test model").unwrap();
+    app.update_model_label();
+    wait_for(|| {
+        app.poll_model_check();
+        app.model_check.borrow().is_none()
+    });
+    release.send(()).unwrap();
+    app.poll_model_check();
+    assert!(app.model_available.get());
+    assert!(app.main.open.is_sensitive());
+    // An idle rewrite poll should not reset widget sensitivity at all.
+    app.main.open.set_sensitive(false);
+    app.poll_rewrite();
+    assert!(!app.main.open.is_sensitive());
+    app.refresh();
+    assert!(app.main.open.is_sensitive());
+
+    // Closing queues its final snapshot, keeps GTK responsive, and waits for
+    // completion instead of allowing process exit while the save is in flight.
+    let (entered, started) = mpsc::sync_channel(1);
+    let (release, resume) = mpsc::sync_channel(1);
+    let ui_thread = std::thread::current().id();
+    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(move |_| {
+        assert_ne!(std::thread::current().id(), ui_thread);
+        entered.send(()).unwrap();
+        resume.recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(())
+    });
+    app.window.present();
+    app.window.close();
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.poll_preferences_save();
+    assert!(app.closing.get());
+    assert!(!app.allow_close.get());
+    assert!(!app.window.is_sensitive());
+    release.send(()).unwrap();
+    wait_for(|| {
+        app.poll_preferences_save();
+        app.allow_close.get()
+    });
+
+    // A failed final save leaves the window usable and surfaces the error.
+    let parent = adw::ApplicationWindow::builder().build();
+    let app = test_app(&parent);
+    app.connect();
+    *app.settings_writer.borrow_mut() =
+        settings::SaveWorker::with_save(|_| anyhow::bail!("simulated disk failure"));
+    app.window.present();
+    app.window.close();
+    wait_for(|| {
+        app.poll_preferences_save();
+        !app.closing.get()
+    });
+    assert!(!app.allow_close.get());
+    assert!(app.window.is_sensitive());
+    assert!(app.main.status.text().contains("simulated disk failure"));
 }
 
 fn model_library_window(parent: &adw::ApplicationWindow) {
