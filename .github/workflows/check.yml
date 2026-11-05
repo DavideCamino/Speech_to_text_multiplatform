@@ -37,6 +37,7 @@ jobs:
       CARGO_FEATURES: ${{ matrix.features }}
       GDK_BACKEND: x11
       GTK_A11Y: none
+      GSK_RENDERER: cairo
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

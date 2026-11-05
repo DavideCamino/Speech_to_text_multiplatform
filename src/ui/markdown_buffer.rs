@@ -372,30 +372,61 @@ impl MarkdownBuffer {
             };
             let latest = self.revision.clone();
             let expected_value = Cell::new(previous_value);
-            let previous_upper = Cell::new(-1.0);
-            let frames = Cell::new(0);
+            let previous_bounds = Cell::new(view.vadjustment().map(|a| (a.upper(), a.page_size())));
+            let settled_frames = Cell::new(0);
+            let started = Cell::new(None::<std::time::Instant>);
             self.scroll_tick = Some(view.add_tick_callback(move |view, _| {
                 let Some(adjustment) = view.vadjustment() else {
                     return glib::ControlFlow::Break;
                 };
-                if latest.get() != revision || adjustment.value() < expected_value.get() - 2.0 {
+                if latest.get() != revision {
                     return glib::ControlFlow::Break;
+                }
+                let bounds = (adjustment.upper(), adjustment.page_size());
+                // A shrinking scroll range can clamp the value without user
+                // input. Growing bounds, however, must not hide a reader's
+                // upward scroll between insertion and this frame.
+                let clamped = previous_bounds
+                    .get()
+                    .is_some_and(|(upper, page)| bounds.0 - bounds.1 < upper - page - 2.0);
+                if !clamped && adjustment.value() < expected_value.get() - 2.0 {
+                    return glib::ControlFlow::Break;
+                }
+                if !view.is_mapped() || view.height() <= 0 || adjustment.page_size() <= 0.0 {
+                    return glib::ControlFlow::Continue;
                 }
                 if !bottom {
                     view.scroll_to_mark(&anchor.mark, 0.0, true, 0.0, 0.0);
                     return glib::ControlFlow::Break;
                 }
-                // Follow without animated scroll_to_mark: during continuous
-                // streaming an unfinished animation would look like a user
-                // scrolled away and wrongly disable following on the next batch.
-                // A second frame allows GTK to finish text layout/upper bounds.
+                // Validate the actual end of the document, not just GTK's
+                // provisional adjustment bounds. Under Xvfb several frames can
+                // have identical bounds before the first text layout completes.
+                let start = started.get().unwrap_or_else(|| {
+                    let now = std::time::Instant::now();
+                    started.set(Some(now));
+                    now
+                });
+                let end = view.iter_location(&anchor.buffer.end_iter());
+                // Set the adjustment directly to avoid animations that lag
+                // behind rapid streamed batches and look like reader scrolling.
                 let upper = adjustment.upper();
-                adjustment.set_value((upper - adjustment.page_size()).max(0.0));
+                let page = adjustment.page_size();
+                adjustment.set_value((upper - page).max(0.0));
                 expected_value.set(adjustment.value());
-                frames.set(frames.get() + 1);
-                let old_upper = previous_upper.replace(upper);
-                let settled = frames.get() >= 2 && (upper - old_upper).abs() < 0.1;
-                if settled || frames.get() >= 6 {
+                let visible = view.visible_rect();
+                let at_end = end.y() + end.height() <= visible.y() + visible.height() + 2
+                    && (adjustment.value() + page - upper).abs() < 2.0;
+                let unchanged = previous_bounds.replace(Some((upper, page))) == Some((upper, page));
+                settled_frames.set(if at_end && unchanged {
+                    settled_frames.get() + 1
+                } else {
+                    0
+                });
+                // Use elapsed time only as a safety bound, never a small frame
+                // count as proof that asynchronous layout has finished.
+                if settled_frames.get() >= 2 || start.elapsed() >= std::time::Duration::from_secs(2)
+                {
                     glib::ControlFlow::Break
                 } else {
                     glib::ControlFlow::Continue
@@ -518,7 +549,12 @@ pub(super) fn test_markdown_buffer() {
 
 #[cfg(test)]
 pub(super) fn test_markdown_scrolling() {
-    use std::time::{Duration, Instant};
+    test_markdown_scrolling_case(false);
+    test_markdown_scrolling_case(true);
+}
+
+#[cfg(test)]
+fn test_markdown_scrolling_case(render_before_mapping: bool) {
     let view = gtk::TextView::builder()
         .editable(false)
         .cursor_visible(false)
@@ -531,45 +567,48 @@ pub(super) fn test_markdown_scrolling() {
         .default_height(250)
         .build();
     let mut renderer = MarkdownBuffer::new(&view);
-    let context = glib::MainContext::default();
-    let settle = || {
-        // GTK may animate scroll_to_mark; wait for the viewport to settle.
-        let deadline = Instant::now() + Duration::from_millis(350);
-        while Instant::now() < deadline {
-            while context.pending() {
-                context.iteration(false);
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    };
-    window.present();
     let text: String = (0..80)
         .map(|i| format!("Paragraph {i}: stable content.\n\n"))
         .collect();
-    renderer.update(&view, &text);
-    settle();
+    if render_before_mapping {
+        renderer.update(&view, &text);
+    }
+    window.present();
     let adjustment = scroll.vadjustment();
-    assert!(adjustment.upper() > adjustment.page_size());
+    wait_for_gtk("scrolling window allocation", || {
+        view.is_mapped() && view.width() > 0 && view.height() > 0 && adjustment.page_size() > 0.0
+    });
+    wait_for_gtk_frames(&view, 2);
+    if !render_before_mapping {
+        renderer.update(&view, &text);
+    }
+    let at_bottom = || {
+        adjustment.upper() > adjustment.page_size()
+            && (adjustment.value() + adjustment.page_size() - adjustment.upper()).abs() < 3.0
+    };
+    wait_for_gtk("initial bottom follow", at_bottom);
+    wait_for_gtk_frames(&view, 4);
     assert!(
-        (adjustment.value() + adjustment.page_size() - adjustment.upper()).abs() < 3.0,
+        at_bottom(),
         "initial follow: value={}, page={}, upper={}",
         adjustment.value(),
         adjustment.page_size(),
         adjustment.upper()
     );
     adjustment.set_value(150.5);
-    settle();
+    wait_for_gtk_frames(&view, 2);
     let previous = adjustment.value();
     renderer.update(&view, &format!("{text}More output."));
-    settle();
+    wait_for_gtk_frames(&view, 4);
     assert!(
         (adjustment.value() - previous).abs() < 1.0,
         "reading viewport jumped"
     );
     adjustment.set_value(adjustment.upper() - adjustment.page_size());
-    settle();
+    wait_for_gtk_frames(&view, 2);
     renderer.update(&view, &format!("{text}More output.\n\nAnother paragraph."));
-    settle();
+    wait_for_gtk_frames(&view, 4);
+    wait_for_gtk("appended output bottom follow", at_bottom);
     assert!((adjustment.value() + adjustment.page_size() - adjustment.upper()).abs() < 3.0);
     // A user scrolling away before the queued follow runs takes precedence.
     renderer.update(
@@ -577,28 +616,57 @@ pub(super) fn test_markdown_scrolling() {
         &format!("{text}More output.\n\nAnother paragraph.\n\nFinal paragraph."),
     );
     adjustment.set_value(0.0);
-    settle();
+    wait_for_gtk_frames(&view, 4);
     assert!(adjustment.value() < 1.0);
     adjustment.set_value(adjustment.upper() - adjustment.page_size());
-    settle();
+    wait_for_gtk_frames(&view, 2);
     let mut streamed = format!("{text}More output.\n\nAnother paragraph.\n\nFinal paragraph.");
     for i in 0..10 {
         streamed.push_str(&format!("\n\nRapid batch {i}: additional output."));
         renderer.update(&view, &streamed);
-        let deadline = Instant::now() + Duration::from_millis(40);
-        while Instant::now() < deadline {
-            while context.pending() {
-                context.iteration(false);
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        wait_for_gtk_frames(&view, 2);
     }
-    settle();
+    wait_for_gtk_frames(&view, 4);
+    wait_for_gtk("rapid batches bottom follow", at_bottom);
     assert!(
         (adjustment.value() + adjustment.page_size() - adjustment.upper()).abs() < 3.0,
         "rapid batches must keep following"
     );
     window.destroy();
+}
+
+/// Pump GTK until a real condition holds; fail rather than silently skipping
+/// layout work on a slow/headless runner.
+#[cfg(test)]
+pub(super) fn wait_for_gtk(description: &str, mut condition: impl FnMut() -> bool) {
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        context.iteration(false);
+        if condition() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {description}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+fn wait_for_gtk_frames(view: &gtk::TextView, count: u32) {
+    let frames = Rc::new(Cell::new(0));
+    let observed = frames.clone();
+    view.add_tick_callback(move |_, _| {
+        observed.set(observed.get() + 1);
+        if observed.get() >= count {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+    wait_for_gtk("GTK frames", || frames.get() >= count);
 }
 
 #[cfg(test)]

@@ -196,24 +196,27 @@ pub(super) fn test_markdown_zoom() {
     renderer.update(&view, "# Heading\n\nBody text");
     let window = gtk::Window::builder().child(&pane).build();
     window.present();
-    let context = glib::MainContext::default();
-    let settle = || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
-        while std::time::Instant::now() < deadline {
-            while context.pending() {
-                context.iteration(false);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    };
-    settle();
+    use super::markdown_buffer::wait_for_gtk;
+    wait_for_gtk("Markdown zoom initial layout", || {
+        view.is_mapped()
+            && view.width() > 0
+            && view.height() > 0
+            && view.iter_location(&view.buffer().start_iter()).height()
+                > view
+                    .iter_location(&view.buffer().iter_at_offset(9))
+                    .height()
+    });
     let heading_height = view.iter_location(&view.buffer().start_iter()).height();
     zoom.scroll(
         gdk::ModifierType::CONTROL_MASK,
         -6.0,
         gdk::ScrollUnit::Wheel,
     );
-    settle();
+    let target = group.points.get().unwrap();
+    wait_for_gtk("Markdown zoom font and layout", || {
+        (font_points(&view) - target).abs() < 0.1
+            && view.iter_location(&view.buffer().start_iter()).height() > heading_height
+    });
     let enlarged_heading = view.iter_location(&view.buffer().start_iter()).height();
     let body_height = view
         .iter_location(&view.buffer().iter_at_offset(9))
