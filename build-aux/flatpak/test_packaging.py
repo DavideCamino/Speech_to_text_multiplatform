@@ -59,15 +59,14 @@ class ManifestTests(unittest.TestCase):
         self.assertTrue(config["net"]["offline"])
         self.assertEqual(config["source"]["flatpak-vendor"]["directory"], "cargo/vendor")
 
-    def test_combined_license_notice_and_gpl_text_are_installed(self):
+    def test_project_and_dependency_license_notice_is_installed(self):
         manifest = json.loads(next(HERE.glob("io.*.json")).read_text())
         commands = manifest["modules"][0]["build-commands"]
-        for source, filename in [("LICENSES.txt", "LICENSES.txt"),
-                                 ("data/licenses/GPL-3.0.txt", "GPL-3.0.txt")]:
-            self.assertIn(f"install -Dm644 {source} /app/share/licenses/speech2text/{filename}", commands)
-            self.assertTrue((ROOT / source).is_file())
-        self.assertIn("MIT AND GPL-3.0-or-later", (ROOT / "LICENSES.txt").read_text())
-        self.assertIn("GNU GENERAL PUBLIC LICENSE", (ROOT / "data/licenses/GPL-3.0.txt").read_text())
+        self.assertIn("install -Dm644 LICENSES.txt /app/share/licenses/speech2text/LICENSES.txt", commands)
+        notice = (ROOT / "LICENSES.txt").read_text()
+        self.assertIn("project license is MIT", notice)
+        self.assertIn("MPL-2.0", notice)
+        self.assertIn("LGPL", notice)
 
     def test_local_dependency_notices_are_installed(self):
         manifest = json.loads(next(HERE.glob("io.*.json")).read_text())

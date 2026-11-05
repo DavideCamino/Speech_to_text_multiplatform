@@ -1,6 +1,7 @@
 //! GTK stays on the main thread. Workers communicate through typed messages;
 //! no widget is ever sent to an audio, network, or inference thread.
 mod dialogs;
+mod markdown_buffer;
 mod menu;
 mod models;
 mod preferences;
@@ -836,7 +837,7 @@ impl App {
             .buffer()
             .set_text(&self.transcript.borrow().text());
         self.rewrite_state.borrow_mut().markdown.clear();
-        self.rewrite.result.set_markdown("");
+        self.rewrite.renderer.borrow_mut().reset();
         self.rewrite.status.set_text("Ready");
         self.rewrite_dirty.set(false);
         self.stack.set_visible_child_name("rewrite");

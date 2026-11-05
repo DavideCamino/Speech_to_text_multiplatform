@@ -25,8 +25,9 @@ class WindowsPackagingTests(unittest.TestCase):
         installer = (HERE / "installer.iss").read_text()
         self.assertIn(r"LicenseFile=..\..\LICENSES.txt", installer)
         notice = (PACKAGE.ROOT / "LICENSES.txt").read_text()
-        self.assertIn("MIT AND GPL-3.0-or-later", notice)
-        self.assertIn("Corresponding Source", notice)
+        self.assertIn("project license is MIT", notice)
+        self.assertIn("MPL-2.0", notice)
+        self.assertIn("LGPL", notice)
 
     def test_license_paths_normalize_mixed_windows_separators(self):
         # Reproduce scandir's mixed strings from the Windows failure. Emulate
@@ -121,7 +122,6 @@ class WindowsPackagingTests(unittest.TestCase):
             put("Cargo.lock")
             put("LICENSE", "MIT fixture")
             put("LICENSES.txt", (PACKAGE.ROOT / "LICENSES.txt").read_text())
-            put("data/licenses/GPL-3.0.txt", (PACKAGE.ROOT / "data/licenses/GPL-3.0.txt").read_text())
             put("data/icons/io.github.davidecamino.Speech2Text.svg", "<svg/>")
             put("build-aux/windows/Start-Speech2Text.cmd", (HERE / "Start-Speech2Text.cmd").read_text())
             put("vendor/whisper-rs-sys/PATCH.md", "local build fixes")
@@ -156,14 +156,13 @@ class WindowsPackagingTests(unittest.TestCase):
                                  "licenses/msys2/example/LICENSE", "licenses/msys2-packages.txt",
                                  "licenses/whisper-rs-sys-PATCH.md", "licenses/whisper-rs-sys-source.zip",
                                  "licenses/local-rust/packages.json", "licenses/Speech2Text-LICENSE",
-                                 "licenses/LICENSES.txt", "licenses/GPL-3.0.txt",
+                                 "licenses/LICENSES.txt",
                                  "share/icons/hicolor/scalable/apps/io.github.davidecamino.Speech2Text.svg"]:
                     self.assertIn("Speech2Text/" + expected, names)
                 self.assertFalse(any(name.endswith(("icon-theme.cache", "loaders.cache")) for name in names))
                 self.assertFalse(any("\\" in name for name in names))
-                self.assertIn(b"MIT AND GPL-3.0-or-later", output.read("Speech2Text/licenses/LICENSES.txt"))
-                self.assertEqual(output.read("Speech2Text/licenses/GPL-3.0.txt"),
-                                 (PACKAGE.ROOT / "data/licenses/GPL-3.0.txt").read_bytes())
+                self.assertIn(b"project license is MIT", output.read("Speech2Text/licenses/LICENSES.txt"))
+                self.assertIn(b"MPL-2.0", output.read("Speech2Text/licenses/LICENSES.txt"))
                 launcher = output.read("Speech2Text/Start-Speech2Text.cmd")
                 self.assertNotIn(b"\n", launcher.replace(b"\r\n", b""))
                 report = json.loads(output.read("Speech2Text/runtime-manifest.json"))

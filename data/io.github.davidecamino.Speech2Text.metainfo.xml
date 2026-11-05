@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.davidecamino.Speech2Text</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT AND GPL-3.0-or-later</project_license>
+  <project_license>MIT</project_license>
   <name>Speech2Text</name>
   <summary>Transcribe audio privately with Whisper</summary>
   <developer id="io.github.davidecamino">

@@ -175,7 +175,6 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
     licenses.mkdir()
     shutil.copy2(ROOT / "LICENSE", licenses / "Speech2Text-LICENSE")
     shutil.copy2(ROOT / "LICENSES.txt", licenses / "LICENSES.txt")
-    shutil.copy2(ROOT / "data/licenses/GPL-3.0.txt", licenses / "GPL-3.0.txt")
     shutil.copy2(ROOT / "Cargo.lock", licenses / "Cargo.lock")
     shutil.copy2(inventory, licenses / "msys2-packages.txt")
     shutil.copy2(ROOT / "vendor/whisper-rs-sys/PATCH.md", licenses / "whisper-rs-sys-PATCH.md")
@@ -218,7 +217,7 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
         "A console window remains open for diagnostics.\n"
         "Select/download a whisper.cpp model in Settings, then open an audio file.\n"
         "Models are not bundled. Preferences and downloads use your Windows user profile.\n"
-        "Licensing: project source is MIT; the linked application includes GPL-3.0-or-later components.\n"
+        "Licensing: project source is MIT; bundled dependencies retain their own licenses.\n"
         "See licenses/LICENSES.txt and the accompanying license texts.\n"
         "This build is unsigned and experimental. Report errors and your Windows version:\n"
         "https://github.com/DavideCamino/Speech_to_text_multiplatform/issues\n",

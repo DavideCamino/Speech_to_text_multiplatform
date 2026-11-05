@@ -1080,20 +1080,6 @@
   {
     "type": "archive",
     "archive-type": "tar-gzip",
-    "url": "https://static.crates.io/crates/gtk-markdown/gtk-markdown-0.2.0.crate",
-    "sha256": "5a6cad489b1a4fc56e39844cf1c6c6b54d8e52402a28204a4ff27665d06a43b7",
-    "strip-components": 1,
-    "dest": "cargo/vendor/gtk-markdown-0.2.0"
-  },
-  {
-    "type": "inline",
-    "dest": "cargo/vendor/gtk-markdown-0.2.0",
-    "dest-filename": ".cargo-checksum.json",
-    "contents": "{\"files\": {}, \"package\": \"5a6cad489b1a4fc56e39844cf1c6c6b54d8e52402a28204a4ff27665d06a43b7\"}\n"
-  },
-  {
-    "type": "archive",
-    "archive-type": "tar-gzip",
     "url": "https://static.crates.io/crates/gtk4/gtk4-0.11.5.crate",
     "sha256": "e0f8226c94dd0b65ba2e8fcd8ff402d380e890f6e5a6488e652a0158e827b9bf",
     "strip-components": 1,

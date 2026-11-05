@@ -1,43 +1,46 @@
-Speech2Text — licensing and third-party notices
+Speech2Text - licensing and third-party notices
 
 Speech2Text's own source code is licensed under the MIT License. The project's
-LICENSE file remains unchanged. This does not mean that a linked application
-binary, including its dependencies, is MIT-only.
+LICENSE file remains unchanged. The AppStream project license is MIT.
 
-Speech2Text links gtk-markdown, licensed under the GNU General Public License,
-version 3 or (at your option) any later version (GPL-3.0-or-later). Distribution
-of the combined application must comply with those GPL terms as well as the
-applicable MIT and other third-party license notices. The combined licensing
-expression used in AppStream is MIT AND GPL-3.0-or-later.
+The native Markdown renderer is part of Speech2Text and uses pulldown-cmark,
+which is MIT-licensed. No GPL-licensed Markdown widget is linked in this build.
 
-You may redistribute and modify the combined application under the applicable
-GPL terms. This software is provided without warranty; see the full license
-texts for the exact terms and limitations.
+This does not mean that every component in a distributed application package
+is MIT-licensed. Rust dependencies and bundled native libraries retain their
+own licenses and copyright notices. Examples include MPL-2.0 components such
+as Symphonia and LGPL-licensed GTK libraries. Applicable source-availability,
+redistribution, and replacement/relinking requirements must still be met.
 
 License texts and notices
 ------------------------
 - Project MIT license: LICENSE in the source tree and Flatpak license directory;
   Speech2Text-LICENSE in the Windows package's licenses directory.
-- GNU GPL version 3: data/licenses/GPL-3.0.txt in the source tree; GPL-3.0.txt in
-  the packaged application's license directory.
-- Other dependency licenses and copyright notices are collected alongside this
-  notice in the packaged application's license directory. They retain their
-  respective terms; this notice does not relicense third-party components.
+- Dependency license texts and copyright notices are collected alongside this
+  notice in packaged builds, with package versions and license information.
+  Consult those component-specific notices; this file does not relicense them.
 
 Packaged license directories:
 - Windows: licenses/ beside Start-Speech2Text.cmd.
-- Flatpak: /app/share/licenses/speech2text/ inside the sandbox.
+- Flatpak: /app/share/licenses/speech2text/ inside the sandbox. Native runtime
+  components also have notices and source arrangements supplied by the runtime.
 
 Source and distribution
 -----------------------
 Project source and build instructions:
 https://github.com/DavideCamino/Speech_to_text_multiplatform
 
-When distributing binaries, provide the complete Corresponding Source through
-an appropriate GPL-compliant method, including the exact application and
-required dependency sources, modifications, and build/install scripts. General
-links to upstream projects or package registries are not, by themselves, a
-complete source-delivery arrangement. Verify this for each release.
+Exact Rust dependency versions are recorded in Cargo.lock. Registry dependency
+sources are published at https://crates.io/; local modifications to
+whisper-rs-sys and its bundled native code are in vendor/whisper-rs-sys.
+Windows packages additionally record the MSYS2 package versions and source
+locations in licenses/msys2-packages.txt and licenses/SOURCES.txt.
 
-This notice describes licensing; it is not a written offer to supply source
-and does not certify a particular release's compliance.
+Before distributing a release, review the component licenses and provide the
+required sources, modifications, notices, and build/install information through
+the methods those licenses permit. A general source link is not a substitute
+for fulfilling a particular component's obligations. This notice is not a
+written source offer and does not certify release compliance.
+
+This software is provided without warranty. See the full license texts for
+the applicable terms, permissions, conditions, and limitations.

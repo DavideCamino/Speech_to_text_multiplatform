@@ -10,6 +10,9 @@ fn settings_pages_and_menu_surfaces_build() {
     // Keep all GTK checks on this one test thread: GTK cannot be initialized
     // independently by parallel Rust test threads.
     incremental_transcript_updates();
+    markdown_buffer::test_markdown_buffer();
+    markdown_buffer::test_markdown_scrolling();
+    text_zoom::test_markdown_zoom();
     text_zoom::test_font_zoom();
     text_zoom::test_shared_recognized_zoom();
     font_zoom_panes();
@@ -57,9 +60,12 @@ fn settings_pages_and_menu_surfaces_build() {
     assert_eq!(rewrite.run.label().as_deref(), Some("Rewrite"));
     assert!(!buffer_text(&rewrite.prompt).is_empty());
     assert!(!rewrite.stop.is_sensitive());
-    rewrite.result.set_markdown("# Heading\n\n**Live** output");
-    assert_eq!(rewrite.result.markdown(), "# Heading\n\n**Live** output");
-    assert!(rewrite.result.first_child().is_some());
+    rewrite
+        .renderer
+        .borrow_mut()
+        .update(&rewrite.result, "# Heading\n\n**Live** output");
+    assert_eq!(buffer_text(&rewrite.result), "Heading\n\nLive output");
+    assert!(!rewrite.result.is_editable());
     let menu = menu::button();
     assert_eq!(menu.menu_model().unwrap().n_items(), 3);
     for (_, _, accelerator) in menu::SHORTCUTS {
@@ -73,8 +79,9 @@ fn settings_pages_and_menu_surfaces_build() {
         .expect("About window");
     assert_eq!(about.license_type(), gtk::License::Custom);
     let license = about.license();
-    assert!(license.contains("MIT AND GPL-3.0-or-later"));
-    assert!(license.contains("Corresponding Source"));
+    assert!(license.contains("project license is MIT"));
+    assert!(license.contains("MPL-2.0"));
+    assert!(license.contains("LGPL"));
     for window in gtk::Window::list_toplevels() {
         if let Ok(window) = window.downcast::<gtk::Window>() {
             window.destroy();
@@ -98,7 +105,12 @@ fn font_zoom_panes() {
     let recognized_zoom = Rc::new(text_zoom::ZoomGroup::default());
     let main = MainView::new(&recognized_zoom);
     let rewrite = RewriteView::new(&recognized_zoom);
-    for view in [&main.transcript, &rewrite.source, &rewrite.prompt] {
+    for view in [
+        &main.transcript,
+        &rewrite.source,
+        &rewrite.prompt,
+        &rewrite.result,
+    ] {
         let controller = zoom_controller(view).expect("plain-text pane zoom controller");
         assert_eq!(
             controller.propagation_phase(),
@@ -111,10 +123,6 @@ fn font_zoom_panes() {
         // Synthetic scroll signals without Ctrl must propagate normally.
         assert!(!controller.emit_by_name::<bool>("scroll", &[&0.0_f64, &-1.0_f64]));
     }
-    assert!(
-        zoom_controller(&rewrite.result).is_none(),
-        "Markdown result must not be changed"
-    );
 }
 
 fn test_app(parent: &adw::ApplicationWindow) -> Rc<App> {
@@ -195,10 +203,7 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     tx.send(llm::Event::Text("# Live\n\n**Partial** output".into()))
         .unwrap();
     app.poll_rewrite();
-    assert_eq!(
-        app.rewrite.result.markdown(),
-        "# Live\n\n**Partial** output"
-    );
+    assert_eq!(buffer_text(&app.rewrite.result), "Live\n\nPartial output");
     assert!(app.rewrite_dirty.get());
     assert!(!app.rewrite.copy.is_sensitive());
     cancel.store(true, Ordering::Relaxed);
@@ -219,7 +224,7 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     app.reset_rewrite();
     assert!(!app.rewrite_dirty.get());
     assert!(app.rewrite_markdown().is_empty());
-    assert!(app.rewrite.result.markdown().is_empty());
+    assert!(buffer_text(&app.rewrite.result).is_empty());
     assert!(!app.rewrite.copy.is_sensitive());
 }
 

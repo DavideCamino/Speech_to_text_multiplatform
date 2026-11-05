@@ -1,7 +1,7 @@
 use super::text_zoom::ZoomGroup;
 use adw::prelude::*;
 use gtk::{Align, Orientation};
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 pub fn column(spacing: i32) -> gtk::Box {
     gtk::Box::new(Orientation::Vertical, spacing)
@@ -139,7 +139,8 @@ pub struct RewriteView {
     pub run: gtk::Button,
     pub source: gtk::TextView,
     pub prompt: gtk::TextView,
-    pub result: gtk_markdown::MarkdownTextView,
+    pub result: gtk::TextView,
+    pub renderer: RefCell<super::markdown_buffer::MarkdownBuffer>,
     pub stop: gtk::Button,
     pub status: gtk::Label,
     pub copy: gtk::Button,
@@ -186,13 +187,8 @@ impl RewriteView {
             .build();
         root.append(&status);
         let source = text_view(false);
-        let result = gtk_markdown::MarkdownTextView::new();
-        result.set_margin_start(18);
-        result.set_margin_end(18);
-        result.set_margin_top(16);
-        result.set_margin_bottom(16);
-        // Model-generated links must never launch arbitrary URI handlers.
-        result.connect_link_activated(|_, _| true);
+        let result = text_view(false);
+        let renderer = RefCell::new(super::markdown_buffer::MarkdownBuffer::new(&result));
         let panes = gtk::Box::new(Orientation::Horizontal, 12);
         panes.set_homogeneous(true);
         panes.set_vexpand(true);
@@ -213,6 +209,7 @@ impl RewriteView {
             run,
             source,
             result,
+            renderer,
             prompt,
             stop,
             status,

@@ -1,4 +1,4 @@
-//! Rewrite lifecycle and batched native Markdown rendering.
+//! Rewrite lifecycle and batched native TextBuffer Markdown rendering.
 use super::*;
 use crate::llm;
 
@@ -27,12 +27,6 @@ pub(super) fn plain_text(markdown: &str) -> String {
         }
     }
     text.trim_end().to_owned()
-}
-
-// gtk-markdown supports automatic image loading, including local files. Never
-// let untrusted model output trigger file access or extra network requests.
-fn display_markdown(markdown: &str) -> String {
-    markdown.replace("![", "[")
 }
 
 fn drain(job: &llm::Job) -> Vec<llm::Event> {
@@ -124,7 +118,7 @@ impl App {
                 Some((prompt, text)),
             ));
         }
-        self.rewrite.result.set_markdown("");
+        self.rewrite.renderer.borrow_mut().reset();
         self.rewrite_dirty.set(false);
         self.rewrite.status.set_text("Connecting and generating…");
         self.refresh();
@@ -186,8 +180,9 @@ impl App {
         }
         if changed {
             self.rewrite
-                .result
-                .set_markdown(display_markdown(&self.rewrite_state.borrow().markdown));
+                .renderer
+                .borrow_mut()
+                .update(&self.rewrite.result, &self.rewrite_state.borrow().markdown);
         }
         if controls_changed {
             self.refresh();
@@ -202,14 +197,14 @@ impl App {
 mod tests {
     use super::*;
     #[test]
-    fn exports_and_untrusted_images() {
+    fn plain_text_export() {
         assert_eq!(
             plain_text("# Heading\n\n**bold** and `code`"),
             "Heading\nbold and code"
         );
-        assert!(
-            !display_markdown("![secret](file:///etc/passwd) ![pixel](https://example.com)")
-                .contains("![")
+        assert_eq!(
+            plain_text("![alt](file:///secret) [label](https://example.com)"),
+            "alt label"
         );
     }
 }
