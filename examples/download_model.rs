@@ -19,6 +19,7 @@ fn main() -> Result<()> {
     let path = model::download(
         model,
         std::path::Path::new(&directory),
+        model::Replacement::Never,
         &AtomicBool::new(false),
         |fraction| {
             let percent = (fraction * 100.0) as i32;

@@ -145,20 +145,63 @@ async fn cancellable<T>(
     }
 }
 
+/// Replacement must be explicitly authorized by the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Replacement {
+    Never,
+    Confirmed,
+}
+
+fn publish_download(
+    output: tempfile::NamedTempFile,
+    target: &Path,
+    replacement: Replacement,
+    cancel: &AtomicBool,
+) -> Result<PathBuf> {
+    output.as_file().sync_all()?;
+    ensure!(!cancel.load(Ordering::Relaxed), "Download cancelled");
+    // Both operations keep an existing destination intact on failure. Staging
+    // in the destination directory ensures publication stays on one filesystem.
+    let result = match replacement {
+        Replacement::Never => output.persist_noclobber(target),
+        Replacement::Confirmed => output.persist(target),
+    };
+    result.map_err(|error| error.error).context(
+        "Cannot install downloaded model (the destination may already exist or be in use)",
+    )?;
+    Ok(target.to_owned())
+}
+
+fn verify_download(model: &Model, received: u64, hash: Sha256) -> Result<()> {
+    ensure!(received == model.bytes, "Incomplete model download");
+    ensure!(
+        format!("{:x}", hash.finalize()) == model.sha256,
+        "Model checksum mismatch"
+    );
+    Ok(())
+}
+
 /// Run on a dedicated worker, never on GTK's main thread.
+/// An existing model is never deleted before its verified replacement is ready.
 pub fn download(
     model: &Model,
     directory: &Path,
+    replacement: Replacement,
     cancel: &AtomicBool,
     mut progress: impl FnMut(f64),
 ) -> Result<PathBuf> {
+    ensure!(!cancel.load(Ordering::Relaxed), "Download cancelled");
     std::fs::create_dir_all(directory)?;
     let target = directory.join(model.file);
-    let temporary = directory.join(format!("{}.part", model.file));
+    ensure!(
+        replacement == Replacement::Confirmed || !target.try_exists()?,
+        "A model already exists at {}; replacement requires confirmation",
+        target.display()
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let result = runtime.block_on(async {
+    runtime.block_on(async {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(20))
             .read_timeout(Duration::from_secs(30))
@@ -171,7 +214,11 @@ pub fn download(
         let mut response = cancellable(cancel, request.send())
             .await?
             .error_for_status()?;
-        let mut output = std::fs::File::create(&temporary)?;
+        // Each operation owns its staging file; Drop cleans up only that file.
+        let mut output = tempfile::Builder::new()
+            .prefix(".model-download-")
+            .suffix(".part")
+            .tempfile_in(directory)?;
         let mut hash = Sha256::new();
         let mut received = 0_u64;
         while let Some(chunk) = cancellable(cancel, response.chunk())
@@ -185,22 +232,161 @@ pub fn download(
             progress(received as f64 / model.bytes as f64);
         }
         ensure!(!cancel.load(Ordering::Relaxed), "Download cancelled");
-        ensure!(received == model.bytes, "Incomplete model download");
-        ensure!(
-            format!("{:x}", hash.finalize()) == model.sha256,
-            "Model checksum mismatch"
-        );
-        output.sync_all()?;
-        drop(output);
-        // A verified existing model need not be overwritten (not atomic on Windows).
-        if target.exists() {
-            std::fs::remove_file(&target)?;
-        }
-        std::fs::rename(&temporary, &target)?;
-        Ok(target)
-    });
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
+        verify_download(model, received, hash)?;
+        publish_download(output, &target, replacement, cancel)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn staged(directory: &Path) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new_in(directory).unwrap();
+        file.write_all(b"new model").unwrap();
+        file
     }
-    result
+
+    #[test]
+    fn confirmed_replacement_publishes_new_model_and_removes_staging_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("model.bin");
+        std::fs::write(&target, b"old model").unwrap();
+        let file = staged(directory.path());
+        let staging = file.path().to_owned();
+        assert_eq!(
+            publish_download(
+                file,
+                &target,
+                Replacement::Confirmed,
+                &AtomicBool::new(false)
+            )
+            .unwrap(),
+            target
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"new model");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn destination_collision_without_permission_preserves_existing_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("model.bin");
+        let file = staged(directory.path());
+        let staging = file.path().to_owned();
+        // Simulate another writer creating the destination during the download.
+        std::fs::write(&target, b"other model").unwrap();
+        assert!(
+            publish_download(file, &target, Replacement::Never, &AtomicBool::new(false)).is_err()
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"other model");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn cancelled_replacement_preserves_existing_model_and_cleans_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("model.bin");
+        std::fs::write(&target, b"old model").unwrap();
+        let file = staged(directory.path());
+        let staging = file.path().to_owned();
+        assert!(
+            publish_download(
+                file,
+                &target,
+                Replacement::Confirmed,
+                &AtomicBool::new(true)
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"old model");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn failed_publication_does_not_delete_destination_or_leak_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("model.bin");
+        std::fs::create_dir(&target).unwrap();
+        let existing = target.join("keep.bin");
+        std::fs::write(&existing, b"keep").unwrap();
+        let file = staged(directory.path());
+        let staging = file.path().to_owned();
+        assert!(
+            publish_download(
+                file,
+                &target,
+                Replacement::Confirmed,
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(existing).unwrap(), b"keep");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn verification_failures_preserve_old_model_and_clean_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("model.bin");
+        std::fs::write(&target, b"old model").unwrap();
+        let model = Model {
+            name: "Test",
+            file: "model.bin",
+            bytes: 9,
+            sha256: "not-the-correct-checksum",
+        };
+        for received in [3, 9] {
+            let file = staged(directory.path());
+            let staging = file.path().to_owned();
+            let result = (|| {
+                verify_download(&model, received, Sha256::new())?;
+                publish_download(
+                    file,
+                    &target,
+                    Replacement::Confirmed,
+                    &AtomicBool::new(false),
+                )
+            })();
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"old model");
+            assert!(!staging.exists());
+        }
+    }
+
+    #[test]
+    fn cancelled_download_does_not_remove_another_operations_partial_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let partial = directory.path().join("ggml-tiny.bin.part");
+        std::fs::write(&partial, b"another download").unwrap();
+        assert!(
+            download(
+                &CATALOG[0],
+                directory.path(),
+                Replacement::Confirmed,
+                &AtomicBool::new(true),
+                |_| {}
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(partial).unwrap(), b"another download");
+    }
+
+    #[test]
+    fn unconfirmed_existing_model_is_rejected_before_network_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join(CATALOG[0].file);
+        std::fs::write(&target, b"old model").unwrap();
+        let error = download(
+            &CATALOG[0],
+            directory.path(),
+            Replacement::Never,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("confirmation"));
+        assert_eq!(std::fs::read(target).unwrap(), b"old model");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 }

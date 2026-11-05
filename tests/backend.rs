@@ -170,6 +170,7 @@ fn already_cancelled_download_does_not_publish_a_model() {
     let result = speech2text::model::download(
         &speech2text::model::CATALOG[0],
         dir.path(),
+        speech2text::model::Replacement::Never,
         &AtomicBool::new(true),
         |_| {},
     );

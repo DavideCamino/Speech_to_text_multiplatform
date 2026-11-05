@@ -76,7 +76,7 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     let main = MainView::new();
     let preferences = preferences::Preferences::new(parent, &settings);
     let models = models::Models::new(&preferences.window);
-    let app = App {
+    let app = Rc::new(App {
         window: parent.clone(),
         stack: gtk::Stack::new(),
         transcript_buffer: RefCell::new(transcript_buffer::TranscriptBuffer::new(
@@ -98,7 +98,24 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
         dirty: Cell::new(false),
         rewrite_dirty: Cell::new(false),
         allow_close: Cell::new(false),
-    };
+    });
+    // Asking to replace a model must not start work until explicit approval.
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join(model::CATALOG[0].file);
+    std::fs::write(&target, b"old model").unwrap();
+    app.ask_replace_download(0, target.clone());
+    assert!(app.download.borrow().is_none());
+    let dialog = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .find(|dialog| dialog.heading().as_deref() == Some("Replace existing model?"))
+        .expect("replacement confirmation");
+    assert_eq!(dialog.default_response().as_deref(), Some("cancel"));
+    dialog.response("cancel");
+    assert!(app.download.borrow().is_none());
+    assert_eq!(std::fs::read(&target).unwrap(), b"old model");
+    dialog.close();
+
     app.stack.add_named(&app.main.root, Some("main"));
     app.stack.add_named(&app.rewrite.root, Some("rewrite"));
     app.preferences.llm_port.set_text("not-a-port");

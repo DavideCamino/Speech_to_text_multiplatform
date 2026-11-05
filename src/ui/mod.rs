@@ -36,7 +36,7 @@ enum DownloadEvent {
     Finished(Result<PathBuf, String>),
 }
 enum ModelTask {
-    Download(usize),
+    Download(usize, model::Replacement),
     Copy(PathBuf),
 }
 struct ModelJob {
@@ -810,17 +810,65 @@ impl App {
             if response == "download"
                 && let Some(app) = weak.upgrade()
             {
-                app.start_model_task(ModelTask::Download(catalog.selected() as usize));
+                app.confirm_download(catalog.selected() as usize);
             }
         });
         dialog.present();
+    }
+
+    fn confirm_download(self: &Rc<Self>, index: usize) {
+        if self.busy() {
+            return;
+        }
+        let Some(model) = model::CATALOG.get(index) else {
+            return;
+        };
+        let target = match settings::model_dir().and_then(|directory| {
+            let target = directory.join(model.file);
+            Ok((target.try_exists()?, target))
+        }) {
+            Ok((false, _)) => {
+                self.start_model_task(ModelTask::Download(index, model::Replacement::Never));
+                return;
+            }
+            Ok((true, target)) => target,
+            Err(error) => {
+                dialogs::message(
+                    &self.dialog_parent(),
+                    "Cannot check model destination",
+                    &format!("{error:#}"),
+                );
+                return;
+            }
+        };
+        self.ask_replace_download(index, target);
+    }
+
+    fn ask_replace_download(self: &Rc<Self>, index: usize, target: PathBuf) {
+        let weak = Rc::downgrade(self);
+        dialogs::confirm(
+            &self.models.window,
+            "Replace existing model?",
+            &format!(
+                "A model already exists at {}. Download a fresh copy and replace it? The existing model will be kept until the download is complete and verified. Cancelling or a failed download will leave it unchanged.",
+                target.display()
+            ),
+            &[("replace", "Download and Replace")],
+            move |response| {
+                if response == "replace"
+                    && let Some(app) = weak.upgrade()
+                {
+                    app.start_model_task(ModelTask::Download(index, model::Replacement::Confirmed));
+                }
+            },
+        );
     }
 
     fn start_model_task(&self, task: ModelTask) {
         if self.busy() {
             return;
         }
-        if let ModelTask::Download(index) = &task
+        if let ModelTask::Download(index, _) = &task
             && model::CATALOG.get(*index).is_none()
         {
             return;
@@ -863,9 +911,13 @@ impl App {
                 }
             };
             let result = match task {
-                ModelTask::Download(index) => {
-                    model::download(&model::CATALOG[index], &directory, &cancel, progress)
-                }
+                ModelTask::Download(index, replacement) => model::download(
+                    &model::CATALOG[index],
+                    &directory,
+                    replacement,
+                    &cancel,
+                    progress,
+                ),
                 ModelTask::Copy(path) => model::import(&path, &directory, &cancel, progress),
             }
             .map_err(|e| format!("{e:#}"));
