@@ -83,8 +83,7 @@ impl Reconciler {
             .pending
             .iter()
             .map(|word| word.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
+            .collect::<String>();
         (captions(merged), provisional)
     }
 }
@@ -149,7 +148,6 @@ fn captions(words: Vec<Segment>) -> Vec<Segment> {
             && word.end_ms.saturating_sub(cue.start_ms) <= 6_000
             && cue.text.chars().count() + word.text.chars().count() < 80
         {
-            cue.text.push(' ');
             cue.text.push_str(&word.text);
             cue.end_ms = word.end_ms;
         } else {
@@ -168,7 +166,65 @@ mod tests {
         Segment {
             start_ms: start,
             end_ms: start + 400,
-            text: text.into(),
+            text: format!(" {text}"),
+        }
+    }
+
+    #[test]
+    fn preserves_original_spacing_in_captions_and_provisional_fragments() {
+        for (fragments, expected) in [
+            (vec![" Hello", ",", " world", "!"], "Hello, world!"),
+            (vec![" trans", "crip", "tion"], "transcription"),
+            (vec!["你", "好", "。"], "你好。"),
+            (vec!["こん", "にちは", "。"], "こんにちは。"),
+            (vec![" Bonjour", " !"], "Bonjour !"),
+        ] {
+            let words: Vec<_> = fragments
+                .iter()
+                .enumerate()
+                .map(|(index, text)| Segment {
+                    start_ms: index as u64 * 100,
+                    end_ms: index as u64 * 100 + 100,
+                    text: (*text).into(),
+                })
+                .collect();
+            let raw = fragments.concat();
+            let mut state = Reconciler::default();
+            let (finalized, provisional) = state.update(words.clone(), 0, 1_000, false);
+            assert!(finalized.is_empty());
+            assert_eq!(provisional, raw);
+            let (finalized, provisional) = state.update(words, 0, 1_000, true);
+            assert!(provisional.is_empty());
+            assert_eq!(finalized.len(), 1);
+            assert_eq!(finalized[0].text, raw);
+            let mut transcript = Transcript::default();
+            transcript.append(finalized);
+            assert_eq!(transcript.text(), expected);
+            assert!(transcript.srt().ends_with(&format!("{expected}\n\n")));
+        }
+    }
+
+    #[test]
+    fn spacing_survives_overlap_and_caption_boundaries() {
+        for fragments in [
+            vec![" Hello", ",", " world", "!"],
+            vec!["你", "好", "世", "界"],
+        ] {
+            let words: Vec<_> = fragments
+                .iter()
+                .enumerate()
+                .map(|(index, text)| Segment {
+                    start_ms: index as u64 * 1_500,
+                    end_ms: index as u64 * 1_500 + 100,
+                    text: (*text).into(),
+                })
+                .collect();
+            let mut state = Reconciler::default();
+            let mut transcript = Transcript::default();
+            transcript.append(state.update(words[..3].to_vec(), 0, 4_000, false).0);
+            transcript.append(state.update(words[1..].to_vec(), 1_500, 5_000, true).0);
+            assert_eq!(transcript.text(), fragments.concat().trim());
+            assert!(transcript.segments.len() > 1);
         }
     }
 
@@ -183,7 +239,7 @@ mod tests {
             false,
         );
         transcript.append(first);
-        assert_eq!(provisional, "world");
+        assert_eq!(provisional, " world");
         let (last, provisional) = state.update(
             vec![
                 word(25_200, "Hello,"),
@@ -262,8 +318,8 @@ mod tests {
         assert_eq!(
             last.iter()
                 .map(|s| s.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" "),
+                .collect::<String>()
+                .trim(),
             "revised ending"
         );
     }
@@ -296,8 +352,8 @@ mod tests {
             words
                 .iter()
                 .map(|w| w.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")
+                .collect::<String>()
+                .trim()
         );
         assert!(
             transcript
@@ -313,7 +369,7 @@ mod tests {
             let mut state = Reconciler::default();
             let (finalized, provisional) =
                 state.update(vec![word(end - 500, "last")], 0, end, true);
-            assert_eq!(finalized[0].text, "last");
+            assert_eq!(finalized[0].text, " last");
             assert!(provisional.is_empty());
         }
     }
@@ -354,7 +410,7 @@ mod tests {
         let mut state = Reconciler::default();
         assert!(state.update(vec![], 0, 28_000, false).0.is_empty());
         let (last, provisional) = state.update(vec![word(28_000, "tail")], 24_000, 28_500, true);
-        assert_eq!(last[0].text, "tail");
+        assert_eq!(last[0].text, " tail");
         assert!(provisional.is_empty());
     }
 }

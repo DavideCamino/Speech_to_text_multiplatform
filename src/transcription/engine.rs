@@ -100,19 +100,34 @@ impl Engine {
             return Ok(Vec::new());
         }
         inference.context("Whisper inference failed")?;
-        let mut result = Vec::new();
+        let mut result: Vec<Segment> = Vec::new();
+        let mut leading_whitespace = String::new();
         for segment in self.state.as_iter() {
             let start = (segment.start_timestamp().max(0) as u64 * 10).min(duration_ms);
             let end = (segment.end_timestamp().max(0) as u64 * 10).min(duration_ms);
-            let text = segment.to_str_lossy()?.trim().to_owned();
-            if !text.is_empty() && duration_ms > 0 {
+            // Leading spaces distinguish words from punctuation/subword
+            // continuations. Preserve them until final display/serialization.
+            let text = segment.to_str_lossy()?.into_owned();
+            if text.trim().is_empty() {
+                // A whitespace-only fragment still carries a boundary, but
+                // must not become an empty subtitle cue of its own.
+                if let Some(previous) = result.last_mut() {
+                    previous.text.push_str(&text);
+                } else {
+                    leading_whitespace.push_str(&text);
+                }
+                continue;
+            }
+            let mut text_with_boundary = std::mem::take(&mut leading_whitespace);
+            text_with_boundary.push_str(&text);
+            if duration_ms > 0 {
                 // Several short words can share a token timestamp. Preserve
                 // their text instead of dropping zero-duration word cues.
                 let start = start.min(duration_ms - 1);
                 result.push(Segment {
                     start_ms: offset_ms + start,
                     end_ms: offset_ms + end.max(start + 1),
-                    text,
+                    text: text_with_boundary,
                 });
             }
         }

@@ -309,7 +309,7 @@ mod tests {
             .map(|ms| Segment {
                 start_ms: ms,
                 end_ms: (ms + 400).min(end),
-                text: format!("word{}", ms / 1000),
+                text: format!(" word{}", ms / 1000),
             })
             .collect()
     }
@@ -483,7 +483,7 @@ mod tests {
                             (start >= at && start + 400 <= end).then(|| Segment {
                                 start_ms: start,
                                 end_ms: start + 400,
-                                text: format!("word{ms}"),
+                                text: format!(" word{ms}"),
                             })
                         })
                         .collect())

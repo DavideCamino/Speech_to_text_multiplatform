@@ -3,6 +3,8 @@
 pub struct Segment {
     pub start_ms: u64,
     pub end_ms: u64,
+    /// Original recognition text, including boundary whitespace. Adjacent
+    /// fragments are concatenated verbatim; callers must not trim each one.
     pub text: String,
 }
 
@@ -15,10 +17,10 @@ impl Transcript {
     pub fn text(&self) -> String {
         self.segments
             .iter()
-            .map(|s| s.text.trim())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ")
+            .map(|s| s.text.as_str())
+            .collect::<String>()
+            .trim()
+            .to_owned()
     }
 
     pub fn end_ms(&self) -> u64 {
@@ -27,9 +29,8 @@ impl Transcript {
 
     pub fn append(&mut self, segments: Vec<Segment>) {
         for mut segment in segments {
-            segment.text = segment.text.trim().to_owned();
             segment.start_ms = segment.start_ms.max(self.end_ms());
-            if !segment.text.is_empty() && segment.end_ms > segment.start_ms {
+            if !segment.text.trim().is_empty() && segment.end_ms > segment.start_ms {
                 self.segments.push(segment);
             }
         }
@@ -66,6 +67,35 @@ fn timestamp(ms: u64) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn concatenates_raw_fragments_without_inventing_spaces() {
+        for (fragments, expected) in [
+            (vec![" Hello", ",", " world", "!"], "Hello, world!"),
+            (vec![" trans", "crip", "tion"], "transcription"),
+            (vec!["你", "好", "。"], "你好。"),
+            (vec!["こん", "にちは", "。"], "こんにちは。"),
+            (vec![" Hello ", "world", "! "], "Hello world!"),
+        ] {
+            let mut transcript = Transcript::default();
+            for (index, text) in fragments.iter().enumerate() {
+                transcript.append(vec![Segment {
+                    start_ms: index as u64 * 100,
+                    end_ms: index as u64 * 100 + 100,
+                    text: (*text).into(),
+                }]);
+            }
+            assert_eq!(transcript.text(), expected);
+            assert_eq!(
+                transcript
+                    .segments
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<Vec<_>>(),
+                fragments
+            );
+        }
+    }
+
+    #[test]
     fn srt_and_unicode() {
         let mut t = Transcript::default();
         t.append(vec![Segment {
@@ -88,7 +118,7 @@ mod tests {
             Segment {
                 start_ms: 90,
                 end_ms: 200,
-                text: "second".into(),
+                text: " second".into(),
             },
             Segment {
                 start_ms: 200,

@@ -393,7 +393,7 @@ fn incremental_transcript_updates() {
         end_ms: 1000,
         text: "Caffè ☕".into(),
     }]);
-    renderer.update(&transcript, "working");
+    renderer.update(&transcript, " working");
     assert_eq!(text(), "Caffè ☕ working");
     let boundary = "Caffè ☕".chars().count() as i32;
     // Include the append boundary, where GTK's normal mark gravity would
@@ -407,19 +407,19 @@ fn incremental_transcript_updates() {
     transcript.append(vec![Segment {
         start_ms: 1000,
         end_ms: 2000,
-        text: "世界".into(),
+        text: " 世界".into(),
     }]);
     transcript.append(vec![Segment {
         start_ms: 2000,
         end_ms: 3000,
-        text: "again".into(),
+        text: " again".into(),
     }]);
     let actions = Rc::new(Cell::new(0));
     let observed = actions.clone();
     buffer.connect_begin_user_action(move |_| observed.set(observed.get() + 1));
     // One render handles several accumulated finalized segments plus the
     // latest hypothesis, just as the controller does after polling a batch.
-    renderer.update(&transcript, "latest");
+    renderer.update(&transcript, " latest");
     assert_eq!(actions.get(), 1);
     assert_eq!(text(), "Caffè ☕ 世界 again latest");
     assert_eq!(deletions.borrow().as_slice(), &[(boundary, boundary + 8)]);
@@ -477,4 +477,37 @@ fn incremental_transcript_updates() {
         "the finalized prefix must not be reinserted"
     );
     assert_eq!(deleted_offsets.borrow().as_slice(), &[100_000; 100]);
+
+    // Finalized/provisional boundaries must not invent whitespace, including
+    // when a hypothesis becomes final in a later polling tick.
+    for (fragments, expected) in [
+        (vec![" Hello", ",", " world", "!"], "Hello, world!"),
+        (vec![" trans", "crip", "tion"], "transcription"),
+        (vec!["你", "好", "。"], "你好。"),
+        (vec!["こん", "にちは", "。"], "こんにちは。"),
+        (vec![" Hello ", "world", "! "], "Hello world!"),
+    ] {
+        renderer.reset();
+        transcript = Transcript::default();
+        for (index, fragment) in fragments.iter().enumerate() {
+            renderer.update(&transcript, fragment);
+            let combined = format!(
+                "{}{fragment}",
+                transcript
+                    .segments
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<String>()
+            );
+            assert_eq!(text(), combined.trim());
+            transcript.append(vec![Segment {
+                start_ms: index as u64 * 100,
+                end_ms: (index as u64 + 1) * 100,
+                text: (*fragment).into(),
+            }]);
+            renderer.update(&transcript, "");
+            assert_eq!(text(), transcript.text());
+        }
+        assert_eq!(text(), expected);
+    }
 }

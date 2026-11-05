@@ -8,6 +8,9 @@ pub(super) struct TranscriptBuffer {
     finalized_end: gtk::TextMark,
     rendered_segments: usize,
     provisional: String,
+    // Keep boundary whitespace without displaying trailing whitespace. It is
+    // emitted only when another finalized/provisional fragment follows it.
+    trailing_whitespace: String,
 }
 
 impl TranscriptBuffer {
@@ -18,6 +21,7 @@ impl TranscriptBuffer {
             finalized_end,
             rendered_segments: 0,
             provisional: String::new(),
+            trailing_whitespace: String::new(),
         }
     }
 
@@ -28,6 +32,7 @@ impl TranscriptBuffer {
             .move_mark(&self.finalized_end, &self.buffer.end_iter());
         self.rendered_segments = 0;
         self.provisional.clear();
+        self.trailing_whitespace.clear();
     }
 
     pub fn update(&mut self, transcript: &Transcript, provisional: &str) {
@@ -37,10 +42,8 @@ impl TranscriptBuffer {
         }
         let new_text = new_segments
             .iter()
-            .map(|s| s.text.trim())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+            .map(|s| s.text.as_str())
+            .collect::<String>();
         self.rendered_segments = transcript.segments.len();
         if new_text.is_empty() && self.provisional == provisional {
             return;
@@ -67,11 +70,17 @@ impl TranscriptBuffer {
             self.buffer.delete(&mut start, &mut end);
         }
         if !new_text.is_empty() {
+            let mut text = std::mem::take(&mut self.trailing_whitespace);
+            text.push_str(&new_text);
+            let text = if boundary == 0 {
+                text.trim_start()
+            } else {
+                &text
+            };
+            let committed = text.trim_end();
+            self.trailing_whitespace.push_str(&text[committed.len()..]);
             let mut end = self.buffer.end_iter();
-            if boundary > 0 {
-                self.buffer.insert(&mut end, " ");
-            }
-            self.buffer.insert(&mut end, &new_text);
+            self.buffer.insert(&mut end, committed);
             // Plain insertions can inherit adjacent tags. Finalized text must
             // never retain the provisional foreground tag.
             let start = self.buffer.iter_at_mark(&self.finalized_end);
@@ -80,12 +89,14 @@ impl TranscriptBuffer {
         }
         if !provisional.is_empty() {
             let mut end = self.buffer.end_iter();
-            let separator = if end.offset() > 0 { " " } else { "" };
-            self.buffer.insert_with_tags_by_name(
-                &mut end,
-                &format!("{separator}{provisional}"),
-                &["provisional"],
-            );
+            let text = format!("{}{provisional}", self.trailing_whitespace);
+            let text = if end.offset() == 0 {
+                text.trim_start()
+            } else {
+                &text
+            };
+            self.buffer
+                .insert_with_tags_by_name(&mut end, text.trim_end(), &["provisional"]);
         }
         self.provisional.clear();
         self.provisional.push_str(provisional);
