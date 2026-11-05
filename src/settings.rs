@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -48,10 +51,33 @@ impl Settings {
     }
 
     pub fn save(&self) -> Result<()> {
-        let dir = dirs()?.config_dir().to_owned();
-        std::fs::create_dir_all(&dir)?;
-        // No transcript, prompt, or audio is ever persisted here.
-        std::fs::write(dir.join("settings.json"), serde_json::to_vec_pretty(self)?)?;
+        self.save_in(dirs()?.config_dir())
+    }
+
+    fn save_in(&self, directory: &Path) -> Result<()> {
+        // Serialize before touching the filesystem. No transcript, prompt, or
+        // audio is ever persisted here.
+        let contents = serde_json::to_vec_pretty(self)?;
+        std::fs::create_dir_all(directory).context("Cannot create preferences directory")?;
+        // Stage on the same filesystem so persist can atomically replace the
+        // old configuration without a delete-then-rename gap. On errors, Drop
+        // cleans up only this operation's temporary file.
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".settings-")
+            .suffix(".tmp")
+            .tempfile_in(directory)
+            .context("Cannot create temporary preferences file")?;
+        temporary
+            .write_all(&contents)
+            .context("Cannot write preferences")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .context("Cannot flush preferences")?;
+        temporary
+            .persist(directory.join("settings.json"))
+            .map_err(|error| error.error)
+            .context("Cannot replace preferences")?;
         Ok(())
     }
 }
@@ -60,6 +86,50 @@ impl Settings {
 mod tests {
     use super::*;
     use crate::transcription::GpuBackend;
+
+    #[test]
+    fn save_creates_directory_and_writes_valid_preferences() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("config");
+        let settings = Settings {
+            language: Some("it".into()),
+            ..Settings::default()
+        };
+        settings.save_in(&directory).unwrap();
+        let saved = std::fs::read(directory.join("settings.json")).unwrap();
+        let restored: Settings = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(restored.language.as_deref(), Some("it"));
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn save_replaces_existing_preferences_without_leaking_temporary_files() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.save_in(root.path()).unwrap();
+        settings.language = Some("fr".into());
+        settings.use_gpu = false;
+        settings.save_in(root.path()).unwrap();
+        let restored: Settings = serde_json::from_slice(&std::fs::read(target).unwrap()).unwrap();
+        assert_eq!(restored.language.as_deref(), Some("fr"));
+        assert!(!restored.use_gpu);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_replacement_preserves_destination_and_cleans_up_temporary_file() {
+        let root = tempfile::tempdir().unwrap();
+        // A nonempty directory cannot be replaced by the staged regular file.
+        let target = root.path().join("settings.json");
+        std::fs::create_dir(&target).unwrap();
+        let existing = target.join("keep.json");
+        std::fs::write(&existing, b"existing data").unwrap();
+        let error = Settings::default().save_in(root.path()).unwrap_err();
+        assert!(error.to_string().contains("Cannot replace preferences"));
+        assert_eq!(std::fs::read(existing).unwrap(), b"existing data");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn older_preferences_default_to_automatic_backend() {
