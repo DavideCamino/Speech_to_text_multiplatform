@@ -1,0 +1,43 @@
+Speech2Text — licensing and third-party notices
+
+Speech2Text's own source code is licensed under the MIT License. The project's
+LICENSE file remains unchanged. This does not mean that a linked application
+binary, including its dependencies, is MIT-only.
+
+Speech2Text links gtk-markdown, licensed under the GNU General Public License,
+version 3 or (at your option) any later version (GPL-3.0-or-later). Distribution
+of the combined application must comply with those GPL terms as well as the
+applicable MIT and other third-party license notices. The combined licensing
+expression used in AppStream is MIT AND GPL-3.0-or-later.
+
+You may redistribute and modify the combined application under the applicable
+GPL terms. This software is provided without warranty; see the full license
+texts for the exact terms and limitations.
+
+License texts and notices
+------------------------
+- Project MIT license: LICENSE in the source tree and Flatpak license directory;
+  Speech2Text-LICENSE in the Windows package's licenses directory.
+- GNU GPL version 3: data/licenses/GPL-3.0.txt in the source tree; GPL-3.0.txt in
+  the packaged application's license directory.
+- Other dependency licenses and copyright notices are collected alongside this
+  notice in the packaged application's license directory. They retain their
+  respective terms; this notice does not relicense third-party components.
+
+Packaged license directories:
+- Windows: licenses/ beside Start-Speech2Text.cmd.
+- Flatpak: /app/share/licenses/speech2text/ inside the sandbox.
+
+Source and distribution
+-----------------------
+Project source and build instructions:
+https://github.com/DavideCamino/Speech_to_text_multiplatform
+
+When distributing binaries, provide the complete Corresponding Source through
+an appropriate GPL-compliant method, including the exact application and
+required dependency sources, modifications, and build/install scripts. General
+links to upstream projects or package registries are not, by themselves, a
+complete source-delivery arrangement. Verify this for each release.
+
+This notice describes licensing; it is not a written offer to supply source
+and does not certify a particular release's compliance.

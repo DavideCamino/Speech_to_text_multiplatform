@@ -21,6 +21,13 @@ LICENSE_SPEC.loader.exec_module(LICENSES)
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_installer_displays_combined_licensing_notice(self):
+        installer = (HERE / "installer.iss").read_text()
+        self.assertIn(r"LicenseFile=..\..\LICENSES.txt", installer)
+        notice = (PACKAGE.ROOT / "LICENSES.txt").read_text()
+        self.assertIn("MIT AND GPL-3.0-or-later", notice)
+        self.assertIn("Corresponding Source", notice)
+
     def test_license_paths_normalize_mixed_windows_separators(self):
         # Reproduce scandir's mixed strings from the Windows failure. Emulate
         # Windows lexical paths on Linux, without accessing a Windows drive.
@@ -113,6 +120,8 @@ class WindowsPackagingTests(unittest.TestCase):
             put("Cargo.toml", '[package]\nname="speech2text"\nversion="0.1.0"\n')
             put("Cargo.lock")
             put("LICENSE", "MIT fixture")
+            put("LICENSES.txt", (PACKAGE.ROOT / "LICENSES.txt").read_text())
+            put("data/licenses/GPL-3.0.txt", (PACKAGE.ROOT / "data/licenses/GPL-3.0.txt").read_text())
             put("data/icons/io.github.davidecamino.Speech2Text.svg", "<svg/>")
             put("build-aux/windows/Start-Speech2Text.cmd", (HERE / "Start-Speech2Text.cmd").read_text())
             put("vendor/whisper-rs-sys/PATCH.md", "local build fixes")
@@ -146,11 +155,15 @@ class WindowsPackagingTests(unittest.TestCase):
                                  "share/glib-2.0/schemas/gschemas.compiled", "licenses/rust/packages.json",
                                  "licenses/msys2/example/LICENSE", "licenses/msys2-packages.txt",
                                  "licenses/whisper-rs-sys-PATCH.md", "licenses/whisper-rs-sys-source.zip",
-                                 "licenses/local-rust/packages.json",
+                                 "licenses/local-rust/packages.json", "licenses/Speech2Text-LICENSE",
+                                 "licenses/LICENSES.txt", "licenses/GPL-3.0.txt",
                                  "share/icons/hicolor/scalable/apps/io.github.davidecamino.Speech2Text.svg"]:
                     self.assertIn("Speech2Text/" + expected, names)
                 self.assertFalse(any(name.endswith(("icon-theme.cache", "loaders.cache")) for name in names))
                 self.assertFalse(any("\\" in name for name in names))
+                self.assertIn(b"MIT AND GPL-3.0-or-later", output.read("Speech2Text/licenses/LICENSES.txt"))
+                self.assertEqual(output.read("Speech2Text/licenses/GPL-3.0.txt"),
+                                 (PACKAGE.ROOT / "data/licenses/GPL-3.0.txt").read_bytes())
                 launcher = output.read("Speech2Text/Start-Speech2Text.cmd")
                 self.assertNotIn(b"\n", launcher.replace(b"\r\n", b""))
                 report = json.loads(output.read("Speech2Text/runtime-manifest.json"))

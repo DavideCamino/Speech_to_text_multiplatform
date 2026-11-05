@@ -295,7 +295,9 @@ This draft uses the first model advertised by `/v1/models`; it does not manage m
 
 ### Markdown dependency licensing
 
-The project's own source remains MIT-licensed. The `gtk-markdown` dependency is **GPL-3.0-or-later**, so distributing a linked application requires complying with GPL terms, including corresponding-source obligations; do not describe the combined binary as MIT-only. AppStream metadata reflects both licenses. Review distribution requirements before publishing builds.
+The project's own source remains MIT-licensed. The `gtk-markdown` dependency is **GPL-3.0-or-later**, so distributing a linked application requires complying with GPL terms, including corresponding-source obligations; do not describe the combined binary as MIT-only. AppStream metadata reflects both licenses. The About window and Windows installer display the combined notice in [`LICENSES.txt`](LICENSES.txt). Windows and Flatpak packages include that notice, the project's MIT license, the [full GPL v3 text](data/licenses/GPL-3.0.txt), and collected dependency notices.
+
+These notices do **not** by themselves satisfy corresponding-source obligations. Before publishing a binary release, arrange GPL-compliant delivery of the complete corresponding source for that exact build, including required dependencies, local modifications, and build/install scripts. General upstream/registry links and the current notice collection are not a substitute for that release-specific source delivery.
 
 ## Data and privacy
 

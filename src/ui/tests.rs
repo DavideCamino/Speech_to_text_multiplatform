@@ -64,6 +64,14 @@ fn settings_pages_and_menu_surfaces_build() {
     }
     menu::shortcuts(&parent);
     menu::about(&parent);
+    let about = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::AboutWindow>().ok())
+        .expect("About window");
+    assert_eq!(about.license_type(), gtk::License::Custom);
+    let license = about.license();
+    assert!(license.contains("MIT AND GPL-3.0-or-later"));
+    assert!(license.contains("Corresponding Source"));
     for window in gtk::Window::list_toplevels() {
         if let Ok(window) = window.downcast::<gtk::Window>() {
             window.destroy();
