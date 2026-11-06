@@ -21,6 +21,40 @@ pub fn text_view(editable: bool) -> gtk::TextView {
         .build()
 }
 
+/// A visual hint, never buffer contents. Keep the scrolling widget/pane as
+/// the overlay's main child so text selection, scrolling, and zoom are native.
+fn with_placeholder(
+    content: &impl IsA<gtk::Widget>,
+    view: &gtk::TextView,
+    hint: &str,
+) -> gtk::Overlay {
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(content));
+    let label = gtk::Label::builder()
+        .label(hint)
+        .wrap(true)
+        .xalign(0.0)
+        .halign(Align::Fill)
+        .valign(Align::Start)
+        .can_target(false)
+        .margin_start(18)
+        .margin_end(18)
+        .margin_top(16)
+        .margin_bottom(16)
+        .build();
+    label.add_css_class("dim-label");
+    label.set_visible(view.buffer().char_count() == 0);
+    overlay.add_overlay(&label);
+    overlay.set_clip_overlay(&label, true);
+    let weak = label.downgrade();
+    view.buffer().connect_changed(move |buffer| {
+        if let Some(label) = weak.upgrade() {
+            label.set_visible(buffer.char_count() == 0);
+        }
+    });
+    overlay
+}
+
 pub fn pane(title: &str, view: &impl IsA<gtk::Widget>) -> gtk::Box {
     pane_with_zoom(title, view, &Rc::new(ZoomGroup::default()))
 }
@@ -76,13 +110,7 @@ impl MainView {
         root.set_margin_end(18);
         let context = text_view(true);
         context.set_vexpand(false);
-        context.set_tooltip_text(Some("Optional recognition hints: names, terminology, or topic. Keep it short; incorrect hints can bias recognition. Not saved between sessions."));
-        let context_content = column(8);
-        let hint = gtk::Label::builder()
-            .label("Names, terminology, or topic—for example: Rust, GTK4, Vulkan; participants Giulia and Marco. Hints can help recognition but are not instructions. Kept only for this session.")
-            .wrap(true).halign(Align::Start).build();
-        hint.add_css_class("dim-label");
-        context_content.append(&hint);
+        context.set_tooltip_text(Some("Optional recognition hints: names, terminology, or topic. Keep it short; incorrect hints can bias recognition. Saved locally as plain text on exit."));
         let context_scroll = gtk::ScrolledWindow::builder()
             .child(&context)
             .min_content_height(96)
@@ -91,7 +119,11 @@ impl MainView {
             .vexpand(false)
             .build();
         context_scroll.add_css_class("card");
-        context_content.append(&context_scroll);
+        let context_content = with_placeholder(
+            &context_scroll,
+            &context,
+            "Optional names, terminology, or topic. For example: Rust, GTK4, Vulkan; participants Giulia and Marco. Hints can help recognition but are not instructions.",
+        );
         let context_section = gtk::Expander::builder()
             .label("Context (optional)")
             .expanded(false)
@@ -194,13 +226,20 @@ impl RewriteView {
         root.append(&back);
         let prompt = text_view(true);
         prompt.set_vexpand(false);
-        prompt.buffer().set_text("Context: this audio is a team meeting about a software project. Rewrite the transcript as clear meeting notes, preserving facts, decisions, and action items. Do not invent information.");
+        prompt.set_tooltip_text(Some(
+            "Required instructions for the LLM. Saved locally as plain text on exit.",
+        ));
         let prompt_pane = pane("", &prompt);
         prompt_pane.set_vexpand(false);
+        let prompt_content = with_placeholder(
+            &prompt_pane,
+            &prompt,
+            "Required instructions for the LLM. For example: Rewrite this team meeting transcript as clear notes, preserving facts, decisions, and action items. Do not invent information.",
+        );
         let prompt_section = gtk::Expander::builder()
             .label("Sistem Prompt (required)")
             .expanded(false)
-            .child(&prompt_pane)
+            .child(&prompt_content)
             .build();
         root.append(&prompt_section);
         let notice = gtk::Label::builder()

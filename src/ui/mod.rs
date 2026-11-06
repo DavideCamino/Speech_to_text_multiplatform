@@ -214,6 +214,7 @@ fn build_loaded(application: &adw::Application, settings: Settings, load_error: 
         rewrite_dirty: Cell::new(false),
         allow_close: Cell::new(false),
     });
+    app.restore_prompts();
     app.connect();
     app.refresh_devices();
     app.update_model_label();
@@ -513,6 +514,18 @@ impl App {
         }
     }
 
+    fn restore_prompts(&self) {
+        let settings = self.settings.borrow();
+        self.main
+            .context
+            .buffer()
+            .set_text(&settings.whisper_context);
+        self.rewrite
+            .prompt
+            .buffer()
+            .set_text(&settings.llm_system_prompt);
+    }
+
     fn begin_close(&self) {
         self.closing.set(true);
         self.window.set_sensitive(false);
@@ -526,6 +539,13 @@ impl App {
         self.download_check.borrow_mut().take();
         self.rewrite_state.borrow_mut().job.take();
         self.rewrite_state.borrow_mut().test.take();
+        // Capture the exact text, including deliberately empty values. Prompt
+        // edits are not written by intermediate settings saves during the session.
+        {
+            let mut settings = self.settings.borrow_mut();
+            settings.whisper_context = buffer_text(&self.main.context);
+            settings.llm_system_prompt = buffer_text(&self.rewrite.prompt);
+        }
         // The window stays alive until the latest save completes. Never join
         // the writer or block GTK, and never lose the final save at process exit.
         self.persist_controls();

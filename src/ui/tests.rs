@@ -20,6 +20,7 @@ fn settings_pages_and_menu_surfaces_build() {
     device_discovery_states(&parent);
     language_selection(&parent);
     recognition_context_controls(&parent);
+    prompt_placeholders_and_restore(&parent);
     model_library_window(&parent);
     rewrite_generation_states(&parent);
     editable_transcript();
@@ -61,7 +62,7 @@ fn settings_pages_and_menu_surfaces_build() {
     assert!(preferences.llm_test.is_sensitive());
     let rewrite = RewriteView::new(&Rc::new(text_zoom::ZoomGroup::default()));
     assert_eq!(rewrite.run.label().as_deref(), Some("Rewrite"));
-    assert!(!buffer_text(&rewrite.prompt).is_empty());
+    assert!(buffer_text(&rewrite.prompt).is_empty());
     assert_eq!(
         rewrite.prompt_section.label().as_deref(),
         Some("Sistem Prompt (required)")
@@ -339,6 +340,83 @@ fn recognition_context_controls(parent: &adw::ApplicationWindow) {
     app.preferences.window.destroy();
 }
 
+fn prompt_placeholders_and_restore(parent: &adw::ApplicationWindow) {
+    fn hint(view: &gtk::TextView) -> gtk::Label {
+        view.ancestor(gtk::Overlay::static_type())
+            .unwrap()
+            .downcast::<gtk::Overlay>()
+            .unwrap()
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap()
+    }
+    let app = test_app(parent);
+    app.restore_prompts();
+    let context_hint = hint(&app.main.context);
+    let prompt_hint = hint(&app.rewrite.prompt);
+    for (view, label) in [
+        (&app.main.context, &context_hint),
+        (&app.rewrite.prompt, &prompt_hint),
+    ] {
+        assert!(buffer_text(view).is_empty());
+        assert!(label.property::<bool>("visible"));
+        assert!(label.has_css_class("dim-label"));
+        assert!(!label.can_target());
+        assert!(!label.text().is_empty());
+        view.buffer().set_text("Typed text 世界");
+        assert!(!label.property::<bool>("visible"));
+        assert_eq!(buffer_text(view), "Typed text 世界");
+        view.buffer().set_text("");
+        assert!(label.property::<bool>("visible"));
+    }
+    assert!(!app.rewrite.prompt_section.is_expanded());
+    assert!(
+        app.recognition_context().is_empty(),
+        "the hint must not become Whisper input"
+    );
+    app.rewrite.source.buffer().set_text("Original text");
+    app.start_rewrite();
+    assert!(
+        app.rewrite_state.borrow().job.is_none(),
+        "the LLM hint does not satisfy the required prompt"
+    );
+    {
+        let mut settings = app.settings.borrow_mut();
+        settings.whisper_context = " Giulia, GTK4\n日本語 ".into();
+        settings.llm_system_prompt =
+            " Preserve facts and decisions.\nDo not invent information. ".into();
+    }
+    app.restore_prompts();
+    assert_eq!(buffer_text(&app.main.context), " Giulia, GTK4\n日本語 ");
+    assert_eq!(
+        buffer_text(&app.rewrite.prompt),
+        " Preserve facts and decisions.\nDo not invent information. "
+    );
+    assert!(!context_hint.property::<bool>("visible"));
+    assert!(!prompt_hint.property::<bool>("visible"));
+    // Edits, including clearing a saved value, are captured only on close.
+    app.main.context.buffer().set_text("Updated context");
+    app.rewrite.prompt.buffer().set_text("");
+    app.persist_controls();
+    assert_eq!(
+        app.settings.borrow().whisper_context,
+        " Giulia, GTK4\n日本語 "
+    );
+    assert!(!app.settings.borrow().llm_system_prompt.is_empty());
+    {
+        let mut settings = app.settings.borrow_mut();
+        settings.whisper_context.clear();
+        settings.llm_system_prompt.clear();
+    }
+    app.restore_prompts();
+    assert!(buffer_text(&app.main.context).is_empty());
+    assert!(buffer_text(&app.rewrite.prompt).is_empty());
+    assert!(context_hint.property::<bool>("visible"));
+    assert!(prompt_hint.property::<bool>("visible"));
+    app.preferences.window.destroy();
+}
+
 fn font_zoom_panes() {
     fn zoom_controller(view: &impl IsA<gtk::Widget>) -> Option<gtk::EventControllerScroll> {
         let pane = view.as_ref().parent().unwrap().parent().unwrap();
@@ -435,6 +513,10 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
 
     app.stack.add_named(&app.main.root, Some("main"));
     app.stack.add_named(&app.rewrite.root, Some("rewrite"));
+    app.rewrite
+        .prompt
+        .buffer()
+        .set_text("Rewrite as clear notes without inventing information.");
     let saved_prompt = buffer_text(&app.rewrite.prompt);
     assert!(!app.rewrite.prompt_section.is_expanded());
     app.rewrite.prompt_section.set_expanded(true);
@@ -762,15 +844,24 @@ fn background_filesystem_states() {
     let (entered, started) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
     let ui_thread = std::thread::current().id();
-    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(move |_| {
+    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(move |settings| {
         assert_ne!(std::thread::current().id(), ui_thread);
-        entered.send(()).unwrap();
+        entered.send(settings.clone()).unwrap();
         resume.recv_timeout(Duration::from_secs(5)).unwrap();
         Ok(())
     });
+    app.main
+        .context
+        .buffer()
+        .set_text(" Context saved on close 世界\n ");
+    // Clearing an earlier saved prompt must overwrite it with an empty value.
+    app.settings.borrow_mut().llm_system_prompt = "Earlier prompt".into();
+    app.rewrite.prompt.buffer().set_text("");
     app.window.present();
     app.window.close();
-    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    let saved = started.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(saved.whisper_context, " Context saved on close 世界\n ");
+    assert!(saved.llm_system_prompt.is_empty());
     app.poll_preferences_save();
     assert!(app.closing.get());
     assert!(!app.allow_close.get());

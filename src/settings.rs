@@ -11,6 +11,10 @@ use std::{
 #[serde(default)]
 pub struct Settings {
     pub llm: crate::llm::Connection,
+    /// Saved locally as plain text on normal application close.
+    pub whisper_context: String,
+    /// Saved locally as plain text; empty still requires input before rewriting.
+    pub llm_system_prompt: String,
     pub model: Option<PathBuf>,
     /// None means automatic language detection; otherwise a Whisper language code.
     pub language: Option<String>,
@@ -24,6 +28,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             llm: Default::default(),
+            whisper_context: String::new(),
+            llm_system_prompt: String::new(),
             model: None,
             language: None,
             device: None,
@@ -56,8 +62,8 @@ impl Settings {
     }
 
     fn save_in(&self, directory: &Path) -> Result<()> {
-        // Serialize before touching the filesystem. No transcript, prompt, or
-        // audio is ever persisted here.
+        // Serialize before touching the filesystem. User prompts are stored as
+        // plain text; transcript/results, audio, and auth tokens are not saved.
         let contents = serde_json::to_vec_pretty(self)?;
         std::fs::create_dir_all(directory).context("Cannot create preferences directory")?;
         // Stage on the same filesystem so persist can atomically replace the
@@ -250,6 +256,30 @@ mod tests {
     }
 
     #[test]
+    fn prompts_round_trip_and_can_be_cleared_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            whisper_context: " Giulia, GTK4\n日本語 ".into(),
+            llm_system_prompt: "Preserve facts.\nDo not invent information.".into(),
+            ..Settings::default()
+        };
+        settings.save_in(root.path()).unwrap();
+        let load = || -> Settings {
+            serde_json::from_slice(&std::fs::read(root.path().join("settings.json")).unwrap())
+                .unwrap()
+        };
+        let restored = load();
+        assert_eq!(restored.whisper_context, settings.whisper_context);
+        assert_eq!(restored.llm_system_prompt, settings.llm_system_prompt);
+        settings.whisper_context.clear();
+        settings.llm_system_prompt.clear();
+        settings.save_in(root.path()).unwrap();
+        let restored = load();
+        assert!(restored.whisper_context.is_empty());
+        assert!(restored.llm_system_prompt.is_empty());
+    }
+
+    #[test]
     fn save_creates_directory_and_writes_valid_preferences() {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("config");
@@ -301,6 +331,8 @@ mod tests {
         assert_eq!(settings.llm.host, "127.0.0.1");
         assert_eq!(settings.llm.port, 8080);
         assert!(!settings.llm.https);
+        assert!(settings.whisper_context.is_empty());
+        assert!(settings.llm_system_prompt.is_empty());
     }
 
     #[test]
