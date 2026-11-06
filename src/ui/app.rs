@@ -1,21 +1,19 @@
 //! Shared application construction and UI-wide coordination.
 use super::{
     device_controller::DeviceDiscovery,
+    lifecycle::WindowLifecycle,
     menu,
-    model_controller::{DownloadCheck, ModelJob, ModelScan},
-    models, preferences, rewrite, text_zoom, transcript_buffer,
+    model_controller::ModelState,
+    models, preferences, rewrite, text_zoom,
+    transcript_state::TranscriptState,
+    transcription_controller::TranscriptionSession,
     views::{MainView, RewriteView},
 };
-use crate::{
-    settings::{self, Settings},
-    transcript::Transcript,
-    transcription::Job,
-};
+use crate::settings::{self, Settings};
 use adw::prelude::*;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    sync::mpsc::Receiver,
 };
 
 pub(super) struct App {
@@ -24,27 +22,15 @@ pub(super) struct App {
     pub(super) main: MainView,
     pub(super) preferences: preferences::Preferences,
     pub(super) models: models::Models,
-    pub(super) model_scan: RefCell<Option<ModelScan>>,
-    pub(super) model_check: RefCell<Option<Receiver<bool>>>,
-    pub(super) model_available: Cell<bool>,
-    pub(super) download_check: RefCell<Option<DownloadCheck>>,
+    pub(super) model_state: RefCell<ModelState>,
     pub(super) settings_writer: RefCell<settings::SaveWorker>,
-    pub(super) closing: Cell<bool>,
+    pub(super) lifecycle: Cell<WindowLifecycle>,
     pub(super) rewrite: RewriteView,
     pub(super) rewrite_state: RefCell<rewrite::State>,
     pub(super) settings: RefCell<Settings>,
-    pub(super) transcript: RefCell<Transcript>,
-    pub(super) transcript_buffer: RefCell<transcript_buffer::TranscriptBuffer>,
-    pub(super) provisional: RefCell<String>,
-    pub(super) job: RefCell<Option<Job>>,
-    pub(super) download: RefCell<Option<ModelJob>>,
+    pub(super) document: TranscriptState,
+    pub(super) session: RefCell<TranscriptionSession>,
     pub(super) device_discovery: RefCell<Option<DeviceDiscovery>>,
-    pub(super) recording: Cell<bool>,
-    pub(super) dirty: Cell<bool>,
-    pub(super) text_dirty: Cell<bool>,
-    pub(super) rendering_transcript: Cell<bool>,
-    pub(super) rewrite_dirty: Cell<bool>,
-    pub(super) allow_close: Cell<bool>,
 }
 
 impl App {
@@ -89,36 +75,22 @@ impl App {
             .bind_property("fraction", &models.progress, "fraction")
             .sync_create()
             .build();
-        let transcript_buffer = RefCell::new(transcript_buffer::TranscriptBuffer::new(
-            main.transcript.buffer(),
-        ));
+        let document = TranscriptState::new(main.transcript.buffer());
         Rc::new(Self {
             window,
             stack,
             main,
             preferences,
             models,
-            model_scan: RefCell::default(),
-            model_check: RefCell::default(),
-            model_available: Cell::new(false),
-            download_check: RefCell::default(),
+            model_state: RefCell::default(),
             settings_writer: RefCell::new(settings_writer),
-            closing: Cell::new(false),
+            lifecycle: Cell::default(),
             rewrite,
             rewrite_state: RefCell::default(),
             settings: RefCell::new(settings),
-            transcript: RefCell::default(),
-            transcript_buffer,
-            provisional: RefCell::default(),
-            job: RefCell::default(),
-            download: RefCell::default(),
+            document,
+            session: RefCell::default(),
             device_discovery: RefCell::default(),
-            recording: Cell::new(false),
-            dirty: Cell::new(false),
-            text_dirty: Cell::new(false),
-            rendering_transcript: Cell::new(false),
-            rewrite_dirty: Cell::new(false),
-            allow_close: Cell::new(false),
         })
     }
 
@@ -132,17 +104,18 @@ impl App {
         }
     }
 
+    /// Only operations that block starting other work. Library/device discovery,
+    /// availability checks, and LLM connection tests can run independently.
     pub(super) fn busy(&self) -> bool {
-        self.closing.get()
-            || self.download_check.borrow().is_some()
-            || self.job.borrow().is_some()
-            || self.download.borrow().is_some()
-            || self.rewrite_state.borrow().job.is_some()
+        self.lifecycle.get() != WindowLifecycle::Open
+            || self.model_state.borrow().operation.is_busy()
+            || self.session.borrow().is_running()
+            || self.rewrite_state.borrow().operation.is_generating()
     }
 
     pub(super) fn poll(self: &Rc<Self>) {
         self.poll_preferences_save();
-        if self.allow_close.get() {
+        if self.lifecycle.get() == WindowLifecycle::ReadyToClose {
             return;
         }
         self.poll_model_check();
@@ -155,6 +128,8 @@ impl App {
     }
 
     pub(super) fn refresh(&self) {
+        self.window
+            .set_sensitive(self.lifecycle.get() == WindowLifecycle::Open);
         self.refresh_transcript_editability();
         self.refresh_model_controls();
         self.refresh_recognition_controls();

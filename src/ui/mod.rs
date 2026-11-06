@@ -15,6 +15,7 @@ mod rewrite;
 mod task;
 mod text_zoom;
 mod transcript_buffer;
+mod transcript_state;
 mod transcription_controller;
 mod views;
 
@@ -89,10 +90,7 @@ fn build_loaded(application: &adw::Application, settings: Settings, load_error: 
     // widget callbacks hold weak references, avoiding widget/controller cycles.
     gtk::glib::timeout_add_local(WORKER_POLL_INTERVAL, move || {
         if !app.window.is_visible() {
-            app.job.borrow_mut().take();
-            app.download.borrow_mut().take();
-            app.rewrite_state.borrow_mut().job.take();
-            app.rewrite_state.borrow_mut().test.take();
+            app.discard_active_work();
             return gtk::glib::ControlFlow::Break;
         }
         app.poll();

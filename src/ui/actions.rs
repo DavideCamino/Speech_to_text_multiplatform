@@ -2,7 +2,7 @@
 use super::{app::App, dialogs, export::ExportKind, menu, rewrite, views::buffer_text};
 use crate::transcription::Source;
 use adw::prelude::*;
-use std::{rc::Rc, sync::atomic::Ordering};
+use std::rc::Rc;
 
 fn on_click(button: &gtk::Button, app: &Rc<App>, action: impl Fn(Rc<App>) + 'static) {
     let weak = Rc::downgrade(app);
@@ -29,10 +29,8 @@ impl App {
         let weak = Rc::downgrade(self);
         self.main.transcript.buffer().connect_changed(move |_| {
             if let Some(app) = weak.upgrade()
-                && !app.rendering_transcript.get()
+                && app.document.record_user_edit()
             {
-                app.dirty.set(true);
-                app.text_dirty.set(true);
                 app.refresh();
             }
         });
@@ -128,11 +126,9 @@ impl App {
             });
         });
         on_click(&self.models.download, self, |app| {
-            if let Some(job) = app.download.borrow().as_ref() {
-                job.cancel.store(true, Ordering::Relaxed);
-                app.models.download.set_sensitive(false);
-                app.main.status.set_text("Cancelling model operation…");
-                app.models.status.set_text("Cancelling model operation…");
+            let downloading = app.model_state.borrow().operation.is_running();
+            if downloading {
+                app.request_model_cancel();
             } else {
                 app.ask_download();
             }
@@ -151,32 +147,8 @@ impl App {
         on_click(&self.main.record, self, |app| {
             app.request_start(Source::Microphone)
         });
-        on_click(&self.main.stop, self, |app| {
-            if let Some(job) = app.job.borrow().as_ref() {
-                job.stop.store(true, Ordering::Relaxed);
-            }
-            app.main.stop.set_sensitive(false);
-            app.main.status.set_text(
-                "Stopping recording… finishing buffered audio. Any model load must finish first.",
-            );
-        });
-        on_click(&self.main.cancel, self, |app| {
-            if let Some(job) = app.job.borrow().as_ref() {
-                job.cancel.store(true, Ordering::Relaxed);
-            }
-            if let Some(job) = app.download.borrow().as_ref() {
-                job.cancel.store(true, Ordering::Relaxed);
-            }
-            app.main
-                .status
-                .set_text(if app.download.borrow().is_some() {
-                    "Cancelling model operation…"
-                } else {
-                    "Cancelling… inference will abort; any model load must finish first."
-                });
-            app.main.stop.set_sensitive(false);
-            app.main.cancel.set_sensitive(false);
-        });
+        on_click(&self.main.stop, self, |app| app.request_stop());
+        on_click(&self.main.cancel, self, |app| app.request_cancel());
         on_click(&self.main.copy, self, |app| {
             app.window
                 .clipboard()
@@ -187,7 +159,7 @@ impl App {
             app.export("transcript.txt", content, ExportKind::TranscriptText);
         });
         on_click(&self.main.srt, self, |app| {
-            let content = app.transcript.borrow().srt();
+            let content = app.document.srt();
             app.export("transcript.srt", content, ExportKind::Subtitles);
         });
         on_click(&self.main.rewrite, self, |app| app.enter_rewrite());
@@ -195,13 +167,7 @@ impl App {
 
     fn connect_rewrite_actions(self: &Rc<Self>) {
         on_click(&self.preferences.llm_test, self, |app| app.test_llm());
-        on_click(&self.rewrite.stop, self, |app| {
-            if let Some(job) = app.rewrite_state.borrow().job.as_ref() {
-                job.cancel.store(true, Ordering::Relaxed);
-            }
-            app.rewrite.stop.set_sensitive(false);
-            app.rewrite.status.set_text("Stopping…");
-        });
+        on_click(&self.rewrite.stop, self, |app| app.request_rewrite_stop());
         on_click(&self.rewrite.back, self, |app| {
             app.stack.set_visible_child_name("main")
         });
@@ -210,7 +176,7 @@ impl App {
                 return;
             }
             let run = |app: &App| app.start_rewrite();
-            if app.rewrite_dirty.get() {
+            if app.rewrite_state.borrow().is_dirty() {
                 let weak = Rc::downgrade(&app);
                 dialogs::confirm(
                     &app.window,

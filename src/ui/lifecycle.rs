@@ -1,8 +1,20 @@
 //! Preferences snapshots, ordered saves, and nonblocking shutdown.
-use super::{app::App, dialogs, views::buffer_text};
+use super::{
+    app::App, dialogs, model_controller::ModelOperation, rewrite::RewriteOperation,
+    views::buffer_text,
+};
 use crate::transcription;
 use adw::prelude::*;
 use std::rc::Rc;
+
+/// Closing stays asynchronous: only the latest completed save may release the window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum WindowLifecycle {
+    #[default]
+    Open,
+    SavingBeforeClose,
+    ReadyToClose,
+}
 
 impl App {
     pub(super) fn persist(&self) {
@@ -50,19 +62,23 @@ impl App {
             .set_text(&settings.llm_system_prompt);
     }
 
+    /// Release job ownership; each job's Drop implementation requests cancellation.
+    pub(super) fn discard_active_work(&self) {
+        self.session.borrow_mut().finish();
+        self.main.meter.set_value(0.0);
+        self.model_state.borrow_mut().operation = ModelOperation::Idle;
+        self.rewrite_state.borrow_mut().operation = RewriteOperation::Idle;
+    }
+
     fn begin_close(&self) {
-        self.closing.set(true);
-        self.window.set_sensitive(false);
+        if self.lifecycle.get() != WindowLifecycle::Open {
+            return;
+        }
+        self.lifecycle.set(WindowLifecycle::SavingBeforeClose);
         self.main
             .status
             .set_text("Saving preferences before closing…");
-        self.job.borrow_mut().take();
-        self.recording.set(false);
-        self.main.meter.set_value(0.0);
-        self.download.borrow_mut().take();
-        self.download_check.borrow_mut().take();
-        self.rewrite_state.borrow_mut().job.take();
-        self.rewrite_state.borrow_mut().test.take();
+        self.discard_active_work();
         // Capture the exact text, including deliberately empty values. Prompt
         // edits are not written by intermediate settings saves during the session.
         {
@@ -70,6 +86,7 @@ impl App {
             settings.whisper_context = buffer_text(&self.main.context);
             settings.llm_system_prompt = buffer_text(&self.rewrite.prompt);
         }
+        self.refresh();
         // The window stays alive until the latest save completes. Never join
         // the writer or block GTK, and never lose the final save at process exit.
         self.persist_controls();
@@ -77,8 +94,8 @@ impl App {
 
     fn preferences_save_finished(&self, result: Result<(), String>) {
         match result {
-            Ok(()) if self.closing.get() => {
-                self.allow_close.set(true);
+            Ok(()) if self.lifecycle.get() == WindowLifecycle::SavingBeforeClose => {
+                self.lifecycle.set(WindowLifecycle::ReadyToClose);
                 self.window.close();
             }
             Ok(()) => {}
@@ -86,8 +103,8 @@ impl App {
                 self.main
                     .status
                     .set_text(&format!("Could not save preferences: {error}"));
-                if self.closing.replace(false) {
-                    self.window.set_sensitive(true);
+                if self.lifecycle.get() == WindowLifecycle::SavingBeforeClose {
+                    self.lifecycle.set(WindowLifecycle::Open);
                     self.refresh();
                     dialogs::message(&self.window, "Could not save preferences", &error);
                 }
@@ -108,13 +125,13 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return gtk::glib::Propagation::Proceed;
             };
-            if app.allow_close.get() {
+            if app.lifecycle.get() == WindowLifecycle::ReadyToClose {
                 return gtk::glib::Propagation::Proceed;
             }
-            if app.closing.get() {
+            if app.lifecycle.get() == WindowLifecycle::SavingBeforeClose {
                 return gtk::glib::Propagation::Stop;
             }
-            if app.busy() || app.dirty.get() || app.rewrite_dirty.get() {
+            if app.busy() || app.document.is_dirty() || app.rewrite_state.borrow().is_dirty() {
                 let weak = Rc::downgrade(&app);
                 dialogs::confirm(
                     &app.window,

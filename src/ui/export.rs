@@ -27,19 +27,14 @@ impl App {
 
     pub(super) fn mark_export_saved(&self, kind: ExportKind, snapshot: &str) {
         match kind {
-            ExportKind::Rewrite if self.rewrite_markdown() == snapshot => {
-                self.rewrite_dirty.set(false);
+            ExportKind::Rewrite => {
+                self.rewrite_state.borrow_mut().mark_export_saved(snapshot);
             }
-            ExportKind::TranscriptText if buffer_text(&self.main.transcript) == snapshot => {
-                self.dirty.set(false);
-                self.text_dirty.set(false);
+            ExportKind::TranscriptText => {
+                self.document
+                    .mark_text_saved(&buffer_text(&self.main.transcript), snapshot);
             }
-            ExportKind::Subtitles
-                if !self.text_dirty.get() && self.transcript.borrow().srt() == snapshot =>
-            {
-                self.dirty.set(false);
-            }
-            _ => {}
+            ExportKind::Subtitles => self.document.mark_subtitles_saved(snapshot),
         }
     }
 }

@@ -1,9 +1,14 @@
 use super::{
     app::App,
     export::ExportKind,
-    markdown_buffer, menu, models, preferences,
+    lifecycle::WindowLifecycle,
+    markdown_buffer, menu,
+    model_controller::{self, ModelAvailability},
+    models, preferences,
+    rewrite::RewriteOperation,
     task::background,
     text_zoom, transcript_buffer,
+    transcription_controller::{SessionSource, TranscriptionSession},
     views::{MainView, RewriteView, buffer_text},
 };
 use crate::{
@@ -50,6 +55,10 @@ fn settings_pages_and_menu_surfaces_build() {
     model_library_window(&parent);
     rewrite_generation_states();
     editable_transcript();
+    transcript_document_states();
+    transcription_session_controls();
+    lifecycle_job_ownership();
+    model_controller::tests::operation_controls();
     background_filesystem_states();
     let compiled = transcription::compiled_gpu_backends();
     let settings = Settings {
@@ -310,7 +319,7 @@ fn recognition_context_controls() {
     let snapshot = app.recognition_context();
     assert_eq!(snapshot, "Giulia, GTK4, Rust\n日本語 terminology");
     assert!(
-        !app.dirty.get(),
+        !app.document.is_dirty(),
         "context is not an unsaved transcript edit"
     );
     app.clear_transcript();
@@ -332,11 +341,14 @@ fn recognition_context_controls() {
     let (tx, events) = mpsc::sync_channel(8);
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
-    *app.job.borrow_mut() = Some(Job {
-        events,
-        stop: stop.clone(),
-        cancel: cancel.clone(),
-    });
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::Microphone,
+        job: Job {
+            events,
+            stop: stop.clone(),
+            cancel: cancel.clone(),
+        },
+    };
     app.refresh();
     assert!(!app.main.context.is_editable());
     assert!(!app.main.context.is_cursor_visible());
@@ -404,7 +416,7 @@ fn prompt_placeholders_and_restore() {
     app.rewrite.source.buffer().set_text("Original text");
     app.start_rewrite();
     assert!(
-        app.rewrite_state.borrow().job.is_none(),
+        !app.rewrite_state.borrow().operation.is_generating(),
         "the LLM hint does not satisfy the required prompt"
     );
     {
@@ -511,9 +523,9 @@ fn shared_app_construction() {
     );
     assert_eq!(app.preferences.model_label.text(), "ggml-base.bin");
     assert!(app.device_discovery.borrow().is_none());
-    assert!(app.model_scan.borrow().is_none());
-    assert!(app.model_check.borrow().is_none());
-    assert!(app.download_check.borrow().is_none());
+    assert!(app.model_state.borrow().scan.is_none());
+    assert!(!app.model_state.borrow().availability.is_checking());
+    assert!(!app.model_state.borrow().operation.is_busy());
     assert!(!app.busy());
     assert!(matches!(
         snapshots.try_recv(),
@@ -556,7 +568,7 @@ fn shared_app_construction() {
     app.refresh();
     let open = app.window.lookup_action("open").unwrap();
     assert!(!open.is_enabled());
-    app.model_available.set(true);
+    app.model_state.borrow_mut().availability = ModelAvailability::Available;
     app.refresh();
     assert!(open.is_enabled());
     for (action, _, _) in menu::SHORTCUTS {
@@ -584,12 +596,13 @@ fn test_app() -> Rc<App> {
 fn rewrite_generation_states() {
     use crate::llm;
     let app = test_app();
+    app.connect();
     // Asking to replace a model must not start work until explicit approval.
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join(model::CATALOG[0].file);
     std::fs::write(&target, b"old model").unwrap();
     app.ask_replace_download(0, target.clone());
-    assert!(app.download.borrow().is_none());
+    assert!(!app.model_state.borrow().operation.is_busy());
     let dialog = gtk::Window::list_toplevels()
         .into_iter()
         .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
@@ -597,7 +610,7 @@ fn rewrite_generation_states() {
         .expect("replacement confirmation");
     assert_eq!(dialog.default_response().as_deref(), Some("cancel"));
     dialog.response("cancel");
-    assert!(app.download.borrow().is_none());
+    assert!(!app.model_state.borrow().operation.is_busy());
     assert_eq!(std::fs::read(&target).unwrap(), b"old model");
     dialog.close();
 
@@ -615,7 +628,7 @@ fn rewrite_generation_states() {
         app.rewrite.prompt.buffer().set_text(empty);
         app.rewrite.prompt_section.set_expanded(false);
         app.start_rewrite();
-        assert!(app.rewrite_state.borrow().job.is_none());
+        assert!(!app.rewrite_state.borrow().operation.is_generating());
         assert!(app.rewrite.prompt_section.is_expanded());
         assert!(
             app.rewrite
@@ -627,7 +640,7 @@ fn rewrite_generation_states() {
     app.rewrite.prompt.buffer().set_text(&saved_prompt);
     app.rewrite.source.buffer().set_text("");
     app.start_rewrite();
-    assert!(app.rewrite_state.borrow().job.is_none());
+    assert!(!app.rewrite_state.borrow().operation.is_generating());
     assert_eq!(
         app.rewrite.status.text(),
         "Original text must not be empty."
@@ -637,9 +650,36 @@ fn rewrite_generation_states() {
     assert!(app.llm_connection().is_err());
     app.preferences.llm_port.set_text("8080");
     assert_eq!(app.llm_connection().unwrap().port, 8080);
+    // A connection test excludes generation, but does not block transcription.
+    app.model_state.borrow_mut().availability = ModelAvailability::Available;
+    let (tested, events) = mpsc::sync_channel(8);
+    let test_cancel = Arc::new(AtomicBool::new(false));
+    app.rewrite_state.borrow_mut().operation = RewriteOperation::TestingConnection(llm::Job {
+        events,
+        cancel: test_cancel.clone(),
+    });
+    app.refresh();
+    assert!(!app.busy());
+    assert!(app.main.open.is_sensitive());
+    assert!(!app.rewrite.run.is_sensitive() && !app.preferences.llm_test.is_sensitive());
+    app.start_rewrite();
+    app.test_llm();
+    assert!(app.rewrite_state.borrow().operation.is_testing());
+    assert!(!test_cancel.load(Ordering::Relaxed));
+    tested
+        .send(llm::Event::Finished(Ok("Connected".into())))
+        .unwrap();
+    app.poll_rewrite();
+    assert!(test_cancel.load(Ordering::Relaxed));
+    assert!(app.rewrite.run.is_sensitive() && app.preferences.llm_test.is_sensitive());
+    assert_eq!(
+        app.preferences.llm_status.subtitle().as_deref(),
+        Some("Connected")
+    );
+
     let (tx, events) = mpsc::sync_channel(8);
     let cancel = Arc::new(AtomicBool::new(false));
-    app.rewrite_state.borrow_mut().job = Some(llm::Job {
+    app.rewrite_state.borrow_mut().operation = RewriteOperation::Generating(llm::Job {
         events,
         cancel: cancel.clone(),
     });
@@ -656,13 +696,24 @@ fn rewrite_generation_states() {
     assert!(!app.rewrite.back.is_sensitive());
     assert!(app.rewrite.stop.is_sensitive());
     assert!(!app.preferences.llm_token.is_sensitive());
+    app.test_llm();
+    assert!(app.rewrite_state.borrow().operation.is_generating());
     tx.send(llm::Event::Text("# Live\n\n**Partial** output".into()))
         .unwrap();
     app.poll_rewrite();
     assert_eq!(buffer_text(&app.rewrite.result), "Live\n\nPartial output");
-    assert!(app.rewrite_dirty.get());
+    assert!(app.rewrite_state.borrow().is_dirty());
     assert!(!app.rewrite.copy.is_sensitive());
-    cancel.store(true, Ordering::Relaxed);
+    let older = app.rewrite_markdown();
+    tx.send(llm::Event::Text("!".into())).unwrap();
+    app.poll_rewrite();
+    app.mark_export_saved(ExportKind::Rewrite, &older);
+    assert!(app.rewrite_state.borrow().is_dirty());
+    app.rewrite.stop.emit_clicked();
+    assert!(cancel.load(Ordering::Relaxed));
+    app.refresh();
+    assert!(!app.rewrite.stop.is_sensitive());
+    assert!(app.rewrite_state.borrow().operation.is_generating());
     tx.send(llm::Event::Finished(Err("Cancelled".into())))
         .unwrap();
     app.poll_rewrite();
@@ -673,14 +724,18 @@ fn rewrite_generation_states() {
             .text()
             .contains("Partial output has been kept")
     );
-    assert_eq!(app.rewrite_markdown(), "# Live\n\n**Partial** output");
+    assert_eq!(app.rewrite_markdown(), "# Live\n\n**Partial** output!");
     assert!(app.rewrite.copy.is_sensitive());
     assert!(app.rewrite.run.is_sensitive());
     assert!(app.rewrite.prompt.is_editable());
     assert_eq!(buffer_text(&app.rewrite.prompt), saved_prompt);
     assert!(!app.rewrite.stop.is_sensitive());
+    app.mark_export_saved(ExportKind::Rewrite, &older);
+    assert!(app.rewrite_state.borrow().is_dirty());
+    app.mark_export_saved(ExportKind::Rewrite, &app.rewrite_markdown());
+    assert!(!app.rewrite_state.borrow().is_dirty());
     app.reset_rewrite();
-    assert!(!app.rewrite_dirty.get());
+    assert!(!app.rewrite_state.borrow().is_dirty());
     assert!(app.rewrite_markdown().is_empty());
     assert!(buffer_text(&app.rewrite.result).is_empty());
     assert!(!app.rewrite.copy.is_sensitive());
@@ -698,25 +753,24 @@ fn editable_transcript() {
     assert!(!app.rewrite.result.is_editable());
     assert!(!app.main.srt.is_sensitive());
 
-    app.transcript.borrow_mut().append(vec![Segment {
+    app.document.accept_final(vec![Segment {
         start_ms: 0,
         end_ms: 1000,
         text: "Recognized words".into(),
     }]);
-    app.dirty.set(true);
     app.render_transcript();
     assert!(
-        !app.text_dirty.get(),
+        !app.document.text_edited(),
         "renderer changes are not manual edits"
     );
-    let original_srt = app.transcript.borrow().srt();
+    let original_srt = app.document.srt();
     app.mark_export_saved(ExportKind::Subtitles, &original_srt);
-    assert!(!app.dirty.get());
+    assert!(!app.document.is_dirty());
     let buffer = app.main.transcript.buffer();
     buffer.insert(&mut buffer.end_iter(), " — corrected 世界");
     let edited = buffer_text(&app.main.transcript);
-    assert!(app.dirty.get() && app.text_dirty.get());
-    assert_eq!(app.transcript.borrow().srt(), original_srt);
+    assert!(app.document.is_dirty() && app.document.text_edited());
+    assert_eq!(app.document.srt(), original_srt);
     assert!(app.main.txt.is_sensitive() && app.main.copy.is_sensitive());
     app.main.copy.emit_clicked();
     let copied = gtk::glib::MainContext::default()
@@ -731,33 +785,36 @@ fn editable_transcript() {
     buffer.insert(&mut buffer.end_iter(), "!");
     app.mark_export_saved(ExportKind::TranscriptText, &edited);
     assert!(
-        app.dirty.get(),
+        app.document.is_dirty(),
         "an older TXT save must not clear newer edits"
     );
     app.mark_export_saved(ExportKind::Subtitles, &original_srt);
     assert!(
-        app.dirty.get(),
+        app.document.is_dirty(),
         "saving original subtitles does not save manual edits"
     );
     app.mark_export_saved(
         ExportKind::TranscriptText,
         &buffer_text(&app.main.transcript),
     );
-    assert!(!app.dirty.get() && !app.text_dirty.get());
+    assert!(!app.document.is_dirty() && !app.document.text_edited());
     buffer.insert(&mut buffer.end_iter(), " More corrections.");
     let edited_prefix = buffer_text(&app.main.transcript);
 
     // Append follows the original timestamp timeline, but its rendering starts
     // after the edited buffer, including text inserted at the old end mark.
-    app.transcript_buffer.borrow_mut().prepare_append();
+    app.document.prepare_append();
     let (tx, events) = mpsc::sync_channel(8);
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
-    *app.job.borrow_mut() = Some(Job {
-        events,
-        stop: stop.clone(),
-        cancel: cancel.clone(),
-    });
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::File,
+        job: Job {
+            events,
+            stop: stop.clone(),
+            cancel: cancel.clone(),
+        },
+    };
     app.refresh();
     assert!(!app.main.transcript.is_editable());
     assert!(!app.main.transcript.is_cursor_visible());
@@ -788,11 +845,11 @@ fn editable_transcript() {
         buffer_text(&app.main.transcript),
         format!("{edited_prefix} next audio")
     );
-    assert_eq!(app.transcript.borrow().end_ms(), 2000);
-    let srt = app.transcript.borrow().srt();
+    assert_eq!(app.document.end_ms(), 2000);
+    let srt = app.document.srt();
     assert!(srt.starts_with(&original_srt));
     assert!(srt.contains("next audio") && !srt.contains("corrected"));
-    assert!(app.text_dirty.get());
+    assert!(app.document.text_edited());
 
     buffer.set_text("");
     assert!(!app.main.txt.is_sensitive() && !app.main.rewrite.is_sensitive());
@@ -802,7 +859,7 @@ fn editable_transcript() {
     );
     app.clear_transcript();
     app.render_transcript();
-    assert!(!app.dirty.get() && !app.text_dirty.get());
+    assert!(!app.document.is_dirty() && !app.document.text_edited());
     assert!(!app.main.srt.is_sensitive());
     buffer.set_text("Manually entered text only");
     assert!(app.has_transcript());
@@ -816,7 +873,7 @@ fn editable_transcript() {
         .expect("manual-only text requires replacement confirmation");
     dialog.response("cancel");
     dialog.close();
-    assert!(app.job.borrow().is_none());
+    assert!(!app.session.borrow().is_running());
     assert_eq!(
         buffer_text(&app.main.transcript),
         "Manually entered text only"
@@ -857,6 +914,142 @@ fn editable_transcript() {
     app.window.destroy();
 }
 
+fn transcript_document_states() {
+    use crate::transcript::Segment;
+    let app = test_app();
+    app.connect();
+    assert!(app.document.set_provisional("preview".into()));
+    assert!(!app.document.set_provisional("preview".into()));
+    app.render_transcript();
+    assert_eq!(buffer_text(&app.main.transcript), "preview");
+    assert!(!app.document.is_dirty() && !app.document.text_edited());
+    assert!(!app.document.has_segments());
+    assert!(!app.document.accept_final(vec![Segment {
+        start_ms: 0,
+        end_ms: 0,
+        text: "invalid timing".into(),
+    }]));
+    assert!(!app.document.is_dirty());
+    assert!(app.document.accept_final(vec![Segment {
+        start_ms: 0,
+        end_ms: 1000,
+        text: "finalized".into(),
+    }]));
+    app.document.clear_provisional();
+    app.render_transcript();
+    assert_eq!(buffer_text(&app.main.transcript), "finalized");
+    assert!(app.document.is_dirty() && !app.document.text_edited());
+    app.clear_transcript();
+    assert!(buffer_text(&app.main.transcript).is_empty());
+    assert!(!app.document.is_dirty() && !app.document.text_edited());
+    app.main.transcript.buffer().set_text("manual");
+    assert!(app.document.is_dirty() && app.document.text_edited());
+    app.clear_transcript();
+    assert!(!app.document.is_dirty() && !app.document.text_edited());
+    app.window.destroy();
+}
+
+fn transcription_session_controls() {
+    let app = test_app();
+    app.connect();
+    let (tx, events) = mpsc::sync_channel(8);
+    let stop = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(AtomicBool::new(false));
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::Microphone,
+        job: Job {
+            events,
+            stop: stop.clone(),
+            cancel: cancel.clone(),
+        },
+    };
+    app.refresh();
+    assert!(app.main.stop.is_sensitive() && app.main.cancel.is_sensitive());
+    app.main.stop.emit_clicked();
+    assert!(stop.load(Ordering::Relaxed));
+    assert!(!cancel.load(Ordering::Relaxed));
+    app.refresh();
+    assert!(!app.main.stop.is_sensitive());
+    assert!(
+        app.main.cancel.is_sensitive(),
+        "Cancel is still available after Stop"
+    );
+    let status = app.main.status.text();
+    tx.send(Event::Status("late worker status".into())).unwrap();
+    tx.send(Event::Meter {
+        seconds: 2.0,
+        level: 0.8,
+    })
+    .unwrap();
+    app.poll_transcription();
+    assert_eq!(app.main.status.text(), status);
+    app.main.cancel.emit_clicked();
+    assert!(cancel.load(Ordering::Relaxed));
+    for _ in 0..3 {
+        app.refresh();
+        assert!(!app.main.stop.is_sensitive() && !app.main.cancel.is_sensitive());
+        assert!(!app.main.transcript.is_editable());
+        assert!(app.session.borrow().is_running());
+    }
+    tx.send(Event::Finished(Ok(()))).unwrap();
+    app.poll_transcription();
+    assert!(!app.session.borrow().is_running());
+    assert!(app.main.transcript.is_editable());
+    assert_eq!(
+        app.main.status.text(),
+        "Cancelled. Completed text has been kept."
+    );
+    app.window.destroy();
+}
+
+fn lifecycle_job_ownership() {
+    use crate::llm;
+    let app = test_app();
+    app.connect();
+    let (_tx, events) = mpsc::sync_channel(1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::File,
+        job: Job {
+            events,
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: cancel.clone(),
+        },
+    };
+    let (_tx, events) = mpsc::sync_channel(1);
+    let test_cancel = Arc::new(AtomicBool::new(false));
+    app.rewrite_state.borrow_mut().operation = RewriteOperation::TestingConnection(llm::Job {
+        events,
+        cancel: test_cancel.clone(),
+    });
+    app.window.present();
+    app.window.close();
+    let confirmation = || {
+        gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+            .find(|dialog| dialog.heading().as_deref() == Some("Close Speech2Text?"))
+            .expect("active work needs confirmation")
+    };
+    let dialog = confirmation();
+    dialog.response("cancel");
+    dialog.close();
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
+    assert!(!cancel.load(Ordering::Relaxed) && !test_cancel.load(Ordering::Relaxed));
+    app.window.close();
+    let dialog = confirmation();
+    dialog.response("close");
+    dialog.close();
+    assert!(cancel.load(Ordering::Relaxed) && test_cancel.load(Ordering::Relaxed));
+    assert!(!app.session.borrow().is_running());
+    assert!(!app.rewrite_state.borrow().operation.is_testing());
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::SavingBeforeClose);
+    wait_for(|| {
+        app.poll_preferences_save();
+        app.lifecycle.get() == WindowLifecycle::ReadyToClose
+    });
+}
+
 fn wait_for(mut condition: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !condition() {
@@ -879,7 +1072,7 @@ fn background_filesystem_states() {
     assert!(!app.main.open.is_sensitive());
     wait_for(|| {
         app.poll_model_check();
-        app.model_check.borrow().is_none()
+        !app.model_state.borrow().availability.is_checking()
     });
     assert!(app.main.open.is_sensitive());
 
@@ -889,20 +1082,21 @@ fn background_filesystem_states() {
         app.refresh();
     }
     assert!(app.main.open.is_sensitive());
-    assert!(app.model_check.borrow().is_none());
+    assert!(!app.model_state.borrow().availability.is_checking());
     app.check_model();
     wait_for(|| {
         app.poll_model_check();
-        app.model_check.borrow().is_none()
+        !app.model_state.borrow().availability.is_checking()
     });
     assert!(!app.main.open.is_sensitive());
 
     // A stalled old check must not block polling or replace a newer result.
     let (release, resume) = mpsc::sync_channel(1);
-    *app.model_check.borrow_mut() = Some(background(move || {
-        resume.recv_timeout(Duration::from_secs(5)).unwrap();
-        false
-    }));
+    app.model_state.borrow_mut().availability =
+        ModelAvailability::Checking(background(move || {
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            false
+        }));
     for _ in 0..100 {
         app.poll_model_check();
         app.refresh();
@@ -911,11 +1105,11 @@ fn background_filesystem_states() {
     app.update_model_label();
     wait_for(|| {
         app.poll_model_check();
-        app.model_check.borrow().is_none()
+        !app.model_state.borrow().availability.is_checking()
     });
     release.send(()).unwrap();
     app.poll_model_check();
-    assert!(app.model_available.get());
+    assert!(app.model_state.borrow().availability.is_available());
     assert!(app.main.open.is_sensitive());
     // An idle rewrite poll should not reset widget sensitivity at all.
     app.main.open.set_sensitive(false);
@@ -935,6 +1129,11 @@ fn background_filesystem_states() {
         resume.recv_timeout(Duration::from_secs(5)).unwrap();
         Ok(())
     });
+    // An older ordinary save must not release a window waiting for its final save.
+    app.persist();
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.poll_preferences_save();
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
     app.main
         .context
         .buffer()
@@ -944,18 +1143,22 @@ fn background_filesystem_states() {
     app.rewrite.prompt.buffer().set_text("");
     app.window.present();
     app.window.close();
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::SavingBeforeClose);
+    app.window.close(); // A second request must not enqueue another final save.
+    release.send(()).unwrap(); // Finish the older save; the final save stays blocked.
     let saved = started.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(saved.whisper_context, " Context saved on close 世界\n ");
     assert!(saved.llm_system_prompt.is_empty());
     app.poll_preferences_save();
-    assert!(app.closing.get());
-    assert!(!app.allow_close.get());
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::SavingBeforeClose);
     assert!(!app.window.is_sensitive());
     release.send(()).unwrap();
     wait_for(|| {
         app.poll_preferences_save();
-        app.allow_close.get()
+        app.lifecycle.get() == WindowLifecycle::ReadyToClose
     });
+
+    assert!(matches!(started.try_recv(), Err(mpsc::TryRecvError::Empty)));
 
     // A failed final save leaves the window usable and surfaces the error.
     let app = test_app();
@@ -966,12 +1169,24 @@ fn background_filesystem_states() {
     app.window.close();
     wait_for(|| {
         app.poll_preferences_save();
-        !app.closing.get()
+        app.lifecycle.get() == WindowLifecycle::Open
     });
-    assert!(!app.allow_close.get());
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
     assert!(app.window.is_sensitive());
     assert!(app.main.status.text().contains("simulated disk failure"));
-    app.window.destroy();
+    assert!(app.main.transcript.is_editable());
+    let dialog = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .find(|dialog| dialog.heading().as_deref() == Some("Could not save preferences"))
+        .expect("save failure is surfaced");
+    dialog.close();
+    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(|_| Ok(()));
+    app.window.close();
+    wait_for(|| {
+        app.poll_preferences_save();
+        app.lifecycle.get() == WindowLifecycle::ReadyToClose
+    });
 }
 
 fn model_library_window(parent: &adw::ApplicationWindow) {
@@ -1034,12 +1249,12 @@ fn model_library_window(parent: &adw::ApplicationWindow) {
         snapshots.try_recv(),
         Err(mpsc::TryRecvError::Empty)
     ));
-    assert!(app.model_check.borrow().is_some());
+    assert!(app.model_state.borrow().availability.is_checking());
     wait_for(|| {
         app.poll_model_check();
-        app.model_check.borrow().is_none()
+        !app.model_state.borrow().availability.is_checking()
     });
-    assert!(app.model_available.get());
+    assert!(app.model_state.borrow().availability.is_available());
     app.window.destroy();
 
     let chosen = Rc::new(RefCell::new(None));

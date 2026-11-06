@@ -8,10 +8,90 @@ use std::{
 };
 
 #[derive(Default)]
+pub(super) enum RewriteOperation {
+    #[default]
+    Idle,
+    TestingConnection(llm::Job),
+    Generating(llm::Job),
+}
+
+impl RewriteOperation {
+    fn connection_job(&self) -> Option<&llm::Job> {
+        match self {
+            Self::TestingConnection(job) => Some(job),
+            _ => None,
+        }
+    }
+
+    fn generation_job(&self) -> Option<&llm::Job> {
+        match self {
+            Self::Generating(job) => Some(job),
+            _ => None,
+        }
+    }
+
+    pub(super) fn is_generating(&self) -> bool {
+        self.generation_job().is_some()
+    }
+
+    pub(super) fn is_testing(&self) -> bool {
+        self.connection_job().is_some()
+    }
+
+    fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    fn can_stop(&self) -> bool {
+        self.generation_job()
+            .is_some_and(|job| !job.cancel.load(Ordering::Relaxed))
+    }
+
+    fn request_stop(&self) -> bool {
+        if let Some(job) = self.generation_job() {
+            job.cancel.store(true, Ordering::Relaxed);
+            return true;
+        }
+        false
+    }
+
+    /// Capture cancellation before Drop marks the job as cancelled itself.
+    fn finish(&mut self) -> bool {
+        let cancelled = self
+            .generation_job()
+            .is_some_and(|job| job.cancel.load(Ordering::Relaxed));
+        *self = Self::Idle;
+        cancelled
+    }
+}
+
+#[derive(Default)]
 pub(super) struct State {
-    pub job: Option<llm::Job>,
-    pub test: Option<llm::Job>,
-    pub markdown: String,
+    pub(super) operation: RewriteOperation,
+    markdown: String,
+    unexported: bool,
+}
+
+impl State {
+    pub(super) fn is_dirty(&self) -> bool {
+        self.unexported
+    }
+
+    fn reset_result(&mut self) {
+        self.markdown.clear();
+        self.unexported = false;
+    }
+
+    fn append_text(&mut self, text: &str) {
+        self.markdown.push_str(text);
+        self.unexported = true;
+    }
+
+    pub(super) fn mark_export_saved(&mut self, snapshot: &str) {
+        if self.markdown == snapshot {
+            self.unexported = false;
+        }
+    }
 }
 
 pub(super) fn plain_text(markdown: &str) -> String {
@@ -61,7 +141,7 @@ impl App {
     pub(super) fn enter_rewrite(self: &Rc<Self>) {
         let source = buffer_text(&self.main.transcript);
         if source != buffer_text(&self.rewrite.source) {
-            if self.rewrite_dirty.get() {
+            if self.rewrite_state.borrow().is_dirty() {
                 let weak = Rc::downgrade(self);
                 dialogs::confirm(
                     &self.window,
@@ -89,19 +169,25 @@ impl App {
             .source
             .buffer()
             .set_text(&buffer_text(&self.main.transcript));
-        self.rewrite_state.borrow_mut().markdown.clear();
+        self.rewrite_state.borrow_mut().reset_result();
         self.rewrite.renderer.borrow_mut().reset();
         self.rewrite.status.set_text("Ready");
-        self.rewrite_dirty.set(false);
         self.stack.set_visible_child_name("rewrite");
         self.refresh();
     }
 
     pub(super) fn refresh_rewrite_controls(&self) {
         let busy = self.busy();
-        let state = self.rewrite_state.borrow();
-        let generating = state.job.is_some();
-        let connection_editable = !generating && state.test.is_none();
+        let (generating, testing, can_stop, has_result) = {
+            let state = self.rewrite_state.borrow();
+            (
+                state.operation.is_generating(),
+                state.operation.is_testing(),
+                state.operation.can_stop(),
+                !state.markdown.trim().is_empty(),
+            )
+        };
+        let connection_editable = !generating && !testing;
         self.preferences.llm_host.set_sensitive(connection_editable);
         self.preferences.llm_port.set_sensitive(connection_editable);
         self.preferences
@@ -111,18 +197,10 @@ impl App {
             .llm_token
             .set_sensitive(connection_editable);
         self.preferences.llm_test.set_sensitive(connection_editable);
-        self.rewrite
-            .run
-            .set_sensitive(!busy && state.test.is_none());
+        self.rewrite.run.set_sensitive(!busy && !testing);
         self.rewrite.prompt.set_editable(!generating);
         self.rewrite.back.set_sensitive(!generating);
-        self.rewrite.stop.set_sensitive(
-            state
-                .job
-                .as_ref()
-                .is_some_and(|job| !job.cancel.load(Ordering::Relaxed)),
-        );
-        let has_result = !state.markdown.trim().is_empty();
+        self.rewrite.stop.set_sensitive(can_stop);
         for button in [
             &self.rewrite.copy,
             &self.rewrite.txt,
@@ -148,7 +226,7 @@ impl App {
         Ok(connection)
     }
     pub(super) fn test_llm(&self) {
-        if self.rewrite_state.borrow().test.is_some() || self.rewrite_state.borrow().job.is_some() {
+        if !self.rewrite_state.borrow().operation.is_idle() {
             return;
         }
         match self.llm_connection() {
@@ -156,19 +234,19 @@ impl App {
                 self.settings.borrow_mut().llm = connection.clone();
                 self.persist();
                 self.preferences.llm_status.set_subtitle("Connecting…");
-                self.preferences.llm_test.set_sensitive(false);
-                self.rewrite_state.borrow_mut().test = Some(llm::start(
-                    connection,
-                    self.preferences.llm_token.text().to_string(),
-                    None,
-                ));
+                self.rewrite_state.borrow_mut().operation =
+                    RewriteOperation::TestingConnection(llm::start(
+                        connection,
+                        self.preferences.llm_token.text().to_string(),
+                        None,
+                    ));
                 self.refresh();
             }
             Err(error) => self.preferences.llm_status.set_subtitle(&error.to_string()),
         }
     }
     pub(super) fn start_rewrite(&self) {
-        if self.busy() || self.rewrite_state.borrow().test.is_some() {
+        if self.busy() || self.rewrite_state.borrow().operation.is_testing() {
             return;
         }
         let prompt = buffer_text(&self.rewrite.prompt);
@@ -198,31 +276,37 @@ impl App {
         self.persist();
         {
             let mut state = self.rewrite_state.borrow_mut();
-            state.markdown.clear();
-            state.job = Some(llm::start(
+            state.reset_result();
+            state.operation = RewriteOperation::Generating(llm::start(
                 connection,
                 self.preferences.llm_token.text().to_string(),
                 Some((prompt, text)),
             ));
         }
         self.rewrite.renderer.borrow_mut().reset();
-        self.rewrite_dirty.set(false);
         self.rewrite.status.set_text("Connecting and generating…");
         self.refresh();
     }
+    pub(super) fn request_rewrite_stop(&self) {
+        if !self.rewrite_state.borrow().operation.request_stop() {
+            return;
+        }
+        self.rewrite.status.set_text("Stopping…");
+        self.refresh();
+    }
+
     pub(super) fn poll_rewrite(&self) {
         let test_events = self
             .rewrite_state
             .borrow()
-            .test
-            .as_ref()
+            .operation
+            .connection_job()
             .map(drain)
             .unwrap_or_default();
         let mut controls_changed = !test_events.is_empty();
         for event in test_events {
             if let llm::Event::Finished(result) = event {
-                self.rewrite_state.borrow_mut().test.take();
-                self.preferences.llm_test.set_sensitive(true);
+                self.rewrite_state.borrow_mut().operation.finish();
                 self.preferences
                     .llm_status
                     .set_subtitle(&result.unwrap_or_else(|e| format!("Connection failed: {e}")));
@@ -231,8 +315,8 @@ impl App {
         let events = self
             .rewrite_state
             .borrow()
-            .job
-            .as_ref()
+            .operation
+            .generation_job()
             .map(drain)
             .unwrap_or_default();
         controls_changed |= !events.is_empty();
@@ -240,15 +324,11 @@ impl App {
         for event in events {
             match event {
                 llm::Event::Text(text) => {
-                    self.rewrite_state.borrow_mut().markdown.push_str(&text);
-                    self.rewrite_dirty.set(true);
+                    self.rewrite_state.borrow_mut().append_text(&text);
                     changed = true;
                 }
                 llm::Event::Finished(result) => {
-                    let job = self.rewrite_state.borrow_mut().job.take();
-                    let cancelled = job
-                        .as_ref()
-                        .is_some_and(|job| job.cancel.load(Ordering::Relaxed));
+                    let cancelled = self.rewrite_state.borrow_mut().operation.finish();
                     self.rewrite.status.set_text(if cancelled {
                         "Stopped. Partial output has been kept."
                     } else {
@@ -282,7 +362,77 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::plain_text;
+    use super::{RewriteOperation, State, plain_text};
+    use crate::llm;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    #[test]
+    fn rewrite_exports_only_clear_a_matching_markdown_snapshot() {
+        let mut state = State::default();
+        state.append_text("**Original**");
+        let old = state.markdown.clone();
+        state.append_text(" and newer output");
+        state.mark_export_saved(&old);
+        assert!(state.is_dirty());
+        state.mark_export_saved("Original and newer output");
+        assert!(
+            state.is_dirty(),
+            "TXT output is not the authoritative snapshot"
+        );
+        state.mark_export_saved(&state.markdown.clone());
+        assert!(!state.is_dirty());
+        state.reset_result();
+        assert!(state.markdown.is_empty());
+    }
+
+    #[test]
+    fn rewrite_operation_keeps_cancelling_job_until_finished() {
+        let (_, events) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut operation = RewriteOperation::Generating(llm::Job {
+            events,
+            cancel: cancel.clone(),
+        });
+        assert!(operation.can_stop());
+        assert!(operation.request_stop());
+        assert!(!operation.can_stop());
+        assert!(operation.is_generating());
+        assert!(operation.finish());
+        assert!(operation.is_idle());
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn rewrite_completion_and_drop_preserve_cancellation_contract() {
+        for testing in [false, true] {
+            let (_, events) = mpsc::sync_channel(1);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let job = llm::Job {
+                events,
+                cancel: cancel.clone(),
+            };
+            let mut operation = if testing {
+                RewriteOperation::TestingConnection(job)
+            } else {
+                RewriteOperation::Generating(job)
+            };
+            assert_eq!(operation.is_testing(), testing);
+            assert_eq!(operation.is_generating(), !testing);
+            assert!(!operation.finish(), "normal completion is not cancellation");
+            assert!(cancel.load(Ordering::Relaxed));
+        }
+        let (_, events) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        drop(RewriteOperation::TestingConnection(llm::Job {
+            events,
+            cancel: cancel.clone(),
+        }));
+        assert!(cancel.load(Ordering::Relaxed));
+    }
     #[test]
     fn plain_text_export() {
         assert_eq!(
