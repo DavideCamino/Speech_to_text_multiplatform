@@ -536,10 +536,7 @@ impl App {
 #[cfg(test)]
 pub(super) mod tests {
     use super::{DownloadEvent, ModelAvailability, ModelJob, ModelOperation};
-    use crate::{
-        settings::{self, Settings},
-        ui::app::App,
-    };
+    use crate::ui::tests::support::test_app;
     use adw::prelude::*;
     use std::sync::{
         Arc,
@@ -584,11 +581,7 @@ pub(super) mod tests {
     // Called only by the shared GTK test entry point, never as a parallel test.
     pub(in crate::ui) fn operation_controls() {
         for from_model_window in [true, false] {
-            let app = App::new(
-                None,
-                Settings::default(),
-                settings::SaveWorker::with_save(|_| Ok(())),
-            );
+            let app = test_app();
             app.connect();
             let (tx, events) = mpsc::sync_channel(8);
             let cancel = Arc::new(AtomicBool::new(false));
@@ -633,11 +626,7 @@ pub(super) mod tests {
             app.window.destroy();
         }
 
-        let app = App::new(
-            None,
-            Settings::default(),
-            settings::SaveWorker::with_save(|_| Ok(())),
-        );
+        let app = test_app();
         let (_, events) = mpsc::channel();
         app.model_state.borrow_mut().availability = ModelAvailability::Checking(events);
         app.poll_model_check();
@@ -659,6 +648,41 @@ pub(super) mod tests {
             .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
             .find(|dialog| dialog.heading().as_deref() == Some("Cannot check model destination"))
             .expect("destination worker failure is surfaced");
+        dialog.close();
+        app.window.destroy();
+    }
+
+    pub(in crate::ui) fn operation_failure_controls() {
+        let app = test_app();
+        app.connect();
+        let (worker, events) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.model_state.borrow_mut().operation = ModelOperation::Running(ModelJob {
+            events,
+            cancel: cancel.clone(),
+            copying: false,
+        });
+        app.refresh();
+        assert!(!app.models.browse.is_sensitive());
+        assert!(app.main.cancel.is_sensitive());
+        worker
+            .send(DownloadEvent::Finished(Err(
+                "simulated download failure".into()
+            )))
+            .unwrap();
+        app.poll_model_download();
+        assert!(!app.busy());
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(app.models.browse.is_sensitive() && app.models.list.is_sensitive());
+        assert!(app.models.download.is_sensitive());
+        assert_eq!(app.models.download.label().as_deref(), Some("Download…"));
+        assert!(!app.main.cancel.is_sensitive());
+        assert_eq!(app.main.status.text(), "Model operation failed.");
+        let dialog = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+            .find(|dialog| dialog.heading().as_deref() == Some("Model operation failed"))
+            .expect("model error is surfaced");
         dialog.close();
         app.window.destroy();
     }

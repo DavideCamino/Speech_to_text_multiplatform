@@ -196,7 +196,7 @@ pub(super) fn test_markdown_zoom() {
     renderer.update(&view, "# Heading\n\nBody text");
     let window = gtk::Window::builder().child(&pane).build();
     window.present();
-    use super::markdown_buffer::wait_for_gtk;
+    use super::tests::support::wait_for_gtk;
     wait_for_gtk("Markdown zoom initial layout", || {
         view.is_mapped()
             && view.width() > 0

@@ -11,8 +11,8 @@ use std::collections::BTreeSet;
 
 #[cfg(test)]
 use {
-    gtk::glib,
-    std::{cell::Cell, rc::Rc},
+    super::tests::support::{wait_for_gtk, wait_for_gtk_frames},
+    std::rc::Rc,
 };
 
 // Semantic styles are GTK-independent; their native presentation belongs here.
@@ -364,38 +364,4 @@ fn test_markdown_scrolling_case(render_before_mapping: bool) {
         "rapid batches must keep following"
     );
     window.destroy();
-}
-
-/// Pump GTK until a real condition holds; fail rather than silently skipping
-/// layout work on a slow/headless runner.
-#[cfg(test)]
-pub(super) fn wait_for_gtk(description: &str, mut condition: impl FnMut() -> bool) {
-    let context = glib::MainContext::default();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        context.iteration(false);
-        if condition() {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for {description}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
-
-#[cfg(test)]
-fn wait_for_gtk_frames(view: &gtk::TextView, count: u32) {
-    let frames = Rc::new(Cell::new(0));
-    let observed = frames.clone();
-    view.add_tick_callback(move |_, _| {
-        observed.set(observed.get() + 1);
-        if observed.get() >= count {
-            glib::ControlFlow::Break
-        } else {
-            glib::ControlFlow::Continue
-        }
-    });
-    wait_for_gtk("GTK frames", || frames.get() >= count);
 }
