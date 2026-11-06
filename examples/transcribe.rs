@@ -39,7 +39,7 @@ fn main() -> Result<()> {
             _ => bail!("Usage: transcribe MODEL AUDIO [--gpu] [--backend vulkan|cuda|metal|rocm]"),
         }
     }
-    let job = transcription::start(Source::File(audio.into()), settings, 0);
+    let job = transcription::start(Source::File(audio.into()), settings, 0, String::new());
     let mut transcript = Transcript::default();
     loop {
         match job.events.recv()? {

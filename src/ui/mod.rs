@@ -647,6 +647,8 @@ impl App {
         let idle = self.job.borrow().is_none() && !self.closing.get();
         self.main.transcript.set_editable(idle);
         self.main.transcript.set_cursor_visible(idle);
+        self.main.context.set_editable(idle);
+        self.main.context.set_cursor_visible(idle);
         let downloading = self.download.borrow().is_some();
         self.preferences
             .select_model
@@ -802,6 +804,10 @@ impl App {
         );
     }
 
+    fn recognition_context(&self) -> String {
+        buffer_text(&self.main.context).trim().to_owned()
+    }
+
     fn start(&self, source: Source, append: bool) {
         if self.busy() {
             return;
@@ -820,6 +826,7 @@ impl App {
             source,
             self.settings.borrow().clone(),
             offset,
+            self.recognition_context(),
         ));
         self.refresh();
     }

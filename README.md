@@ -279,6 +279,14 @@ python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
 
 The backend uses in-process Symphonia decoding, whisper.cpp, platform-specific preferences, and GTK/GIO file dialogs/clipboard. Windows CPU/Vulkan release compilation and runtime assembly have been exercised locally. The GitHub-hosted installer workflow must still be validated on its first run. GPU inference and clean-machine compatibility require manual testing. macOS runtime bundling, microphone usage description, signing, and installer integration remain future work.
 
+## Recognition context
+
+At the top of the transcription window, expand **Context (optional)** to enter names, specialist terminology, or a brief topic description. For example: `Software development meeting. Rust, GTK4, libadwaita, Vulkan. Participants: Giulia and Marco.` The box starts collapsed and empty.
+
+Context is captured when you start recording or transcribing a file and reused as Whisper's initial prompt for each recognition window. Blank context preserves normal recognition. Editing is disabled until the transcription job finishes, including Stop/Cancel shutdown; you can still collapse the section. Replace/Append retains the context for reuse, but it is session-only and is not saved in preferences or included directly in copied/exported text. This is local recognition context, separate from the rewrite view's LLM Instructions.
+
+Keep hints short and relevant: Whisper has a limited prompt-token budget and may truncate long context. Context can improve terminology/spelling but is not an instruction system or a guarantee of accuracy; misleading hints can bias recognition, especially with unclear audio. Previous provisional recognition is never automatically fed back as context.
+
 ## Editing a transcript
 
 The main **Transcript** box is editable whenever transcription is stopped, including after completion or cancellation. Editing and its text cursor are disabled while a transcription job is running or shutting down. **Copy**, **Save TXT**, and **Rewrite** use the text currently in this box, including manual corrections. Manual edits count as unsaved changes; exporting the original subtitles does not mark those corrections saved.

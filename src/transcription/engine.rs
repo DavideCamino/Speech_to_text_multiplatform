@@ -1,5 +1,5 @@
 use crate::{settings::Settings, transcript::Segment};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::{
     ffi::c_void,
     sync::{
@@ -14,6 +14,7 @@ use whisper_rs::{
 pub struct Engine {
     state: WhisperState,
     language: Option<String>,
+    prompt_tokens: Vec<whisper_rs::WhisperTokenId>,
     // Outlives state/backend teardown, including any retained native callback.
     cancel: Arc<AtomicBool>,
 }
@@ -24,8 +25,26 @@ unsafe extern "C" fn abort_inference(data: *mut c_void) -> bool {
     unsafe { &*data.cast::<AtomicBool>() }.load(Ordering::Relaxed)
 }
 
+fn context_prompt(context: &str) -> Result<&str> {
+    let prompt = context.trim();
+    ensure!(
+        !prompt.contains('\0'),
+        "Recognition context cannot contain NUL characters"
+    );
+    ensure!(
+        prompt.len() <= i32::MAX as usize,
+        "Recognition context is too long"
+    );
+    Ok(prompt)
+}
+
 impl Engine {
-    pub fn new(settings: &Settings, cancel: Arc<AtomicBool>) -> Result<Self> {
+    pub fn new(
+        settings: &Settings,
+        recognition_context: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        let prompt = context_prompt(recognition_context)?;
         // Native debug logs can include recognized words. Do not send private
         // transcript fragments to stderr (no logging backend is enabled).
         whisper_rs::install_logging_hooks();
@@ -43,9 +62,23 @@ impl Engine {
         options.gpu_device(super::gpu::gpu_device_index(backend)?);
         let context = WhisperContext::new_with_params(path, options)
             .context("Cannot load model. Check its format, available memory, and GPU drivers; try CPU mode if necessary")?;
+        // This is the same initial-prompt tokenization performed by whisper.cpp.
+        // Tokenize once and borrow the owned tokens on every pass. In whisper-rs
+        // 0.16 set_initial_prompt allocates an unfreed CString per call; using
+        // set_tokens avoids leaking that allocation for each streaming window.
+        // BPE emits at most one token per input byte, so this capacity also
+        // avoids the wrapper's insufficient-token-buffer error path.
+        let prompt_tokens = if prompt.is_empty() {
+            Vec::new()
+        } else {
+            context
+                .tokenize(prompt, prompt.len())
+                .context("Cannot tokenize recognition context")?
+        };
         Ok(Self {
             state: context.create_state()?,
             language: settings.language.clone(),
+            prompt_tokens,
             cancel,
         })
     }
@@ -75,6 +108,9 @@ impl Engine {
         // Each pass re-decodes overlapping audio. Do not feed the previous
         // pass's hypothesis back as a prompt (especially provisional speech).
         params.set_no_context(true);
+        if !self.prompt_tokens.is_empty() {
+            params.set_tokens(&self.prompt_tokens);
+        }
         // Whisper's word-aware wrapping uses token timestamps, so the worker
         // can reconcile words instead of accepting/rejecting entire sentences.
         params.set_token_timestamps(true);
@@ -140,6 +176,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recognition_context_is_optional_trimmed_unicode_and_validated() {
+        assert_eq!(context_prompt("").unwrap(), "");
+        assert_eq!(context_prompt(" \n\t ").unwrap(), "");
+        assert_eq!(
+            context_prompt("  Giulia, GTK4\n日本語  ").unwrap(),
+            "Giulia, GTK4\n日本語"
+        );
+        assert!(context_prompt("invalid\0context").is_err());
+    }
+
+    #[test]
     fn abort_callback_reads_shared_cancel_flag() {
         let cancel = Arc::new(AtomicBool::new(false));
         let data = Arc::as_ptr(&cancel).cast_mut().cast();
@@ -162,9 +209,12 @@ mod tests {
                 language: Some("en".into()),
                 ..Settings::default()
             },
+            "Giulia, GTK4, Rust",
             cancel.clone(),
         )
         .unwrap();
+        assert!(!engine.prompt_tokens.is_empty());
+        let prompt = engine.prompt_tokens.clone();
         let samples: Vec<_> = (0..crate::audio::SAMPLE_RATE * 28)
             .map(|i| (i as f32 * 0.1).sin() * 0.2)
             .collect();
@@ -176,6 +226,10 @@ mod tests {
         let started = std::time::Instant::now();
         let result = engine.transcribe(&samples, 0).unwrap();
         canceller.join().unwrap();
+        assert_eq!(
+            engine.prompt_tokens, prompt,
+            "recognition must not mutate user context"
+        );
         assert!(cancel.load(Ordering::Relaxed));
         assert!(
             result.is_empty(),

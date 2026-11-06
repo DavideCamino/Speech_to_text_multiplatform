@@ -55,6 +55,7 @@ pub struct MainView {
     pub stop: gtk::Button,
     pub cancel: gtk::Button,
     pub transcript: gtk::TextView,
+    pub context: gtk::TextView,
     pub status: gtk::Label,
     pub progress: gtk::ProgressBar,
     pub meter: gtk::LevelBar,
@@ -71,6 +72,30 @@ impl MainView {
         root.set_margin_bottom(18);
         root.set_margin_start(18);
         root.set_margin_end(18);
+        let context = text_view(true);
+        context.set_vexpand(false);
+        context.set_tooltip_text(Some("Optional recognition hints: names, terminology, or topic. Keep it short; incorrect hints can bias recognition. Not saved between sessions."));
+        let context_content = column(8);
+        let hint = gtk::Label::builder()
+            .label("Names, terminology, or topic—for example: Rust, GTK4, Vulkan; participants Giulia and Marco. Hints can help recognition but are not instructions. Kept only for this session.")
+            .wrap(true).halign(Align::Start).build();
+        hint.add_css_class("dim-label");
+        context_content.append(&hint);
+        let context_scroll = gtk::ScrolledWindow::builder()
+            .child(&context)
+            .min_content_height(96)
+            .max_content_height(180)
+            .propagate_natural_height(true)
+            .vexpand(false)
+            .build();
+        context_scroll.add_css_class("card");
+        context_content.append(&context_scroll);
+        let context_section = gtk::Expander::builder()
+            .label("Context (optional)")
+            .expanded(false)
+            .child(&context_content)
+            .build();
+        root.append(&context_section);
         let actions = gtk::Box::new(Orientation::Horizontal, 8);
         let open = gtk::Button::with_label("Open Audio…");
         open.add_css_class("suggested-action");
@@ -126,6 +151,7 @@ impl MainView {
             stop,
             cancel,
             transcript,
+            context,
             status,
             progress,
             meter,

@@ -19,6 +19,7 @@ fn settings_pages_and_menu_surfaces_build() {
     let parent = adw::ApplicationWindow::builder().build();
     device_discovery_states(&parent);
     language_selection(&parent);
+    recognition_context_controls(&parent);
     model_library_window(&parent);
     rewrite_generation_states(&parent);
     editable_transcript();
@@ -250,6 +251,86 @@ fn language_selection(parent: &adw::ApplicationWindow) {
         );
         preferences.window.destroy();
     }
+    app.preferences.window.destroy();
+}
+
+fn recognition_context_controls(parent: &adw::ApplicationWindow) {
+    let app = test_app(parent);
+    app.connect_transcript_editing();
+    app.refresh();
+    let section = app
+        .main
+        .root
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Expander>()
+        .unwrap();
+    assert_eq!(section.label().as_deref(), Some("Context (optional)"));
+    assert!(!section.is_expanded());
+    assert!(app.main.context.is_editable());
+    assert!(app.recognition_context().is_empty());
+    let rewrite_instructions = buffer_text(&app.rewrite.prompt);
+    section.set_expanded(true);
+    app.main
+        .context
+        .buffer()
+        .set_text(" \nGiulia, GTK4, Rust\n日本語 terminology  ");
+    let snapshot = app.recognition_context();
+    assert_eq!(snapshot, "Giulia, GTK4, Rust\n日本語 terminology");
+    assert!(
+        !app.dirty.get(),
+        "context is not an unsaved transcript edit"
+    );
+    app.clear_transcript();
+    assert_eq!(
+        app.recognition_context(),
+        snapshot,
+        "replacing audio retains session context"
+    );
+    app.main
+        .context
+        .buffer()
+        .set_text("Different context for the next job");
+    assert_eq!(
+        snapshot, "Giulia, GTK4, Rust\n日本語 terminology",
+        "a captured job snapshot is owned"
+    );
+    assert_eq!(buffer_text(&app.rewrite.prompt), rewrite_instructions);
+
+    let (tx, events) = mpsc::sync_channel(8);
+    let stop = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(AtomicBool::new(false));
+    *app.job.borrow_mut() = Some(Job {
+        events,
+        stop: stop.clone(),
+        cancel: cancel.clone(),
+    });
+    app.refresh();
+    assert!(!app.main.context.is_editable());
+    assert!(!app.main.context.is_cursor_visible());
+    section.set_expanded(false);
+    assert!(
+        section.is_sensitive(),
+        "the box can still be collapsed during recognition"
+    );
+    stop.store(true, Ordering::Relaxed);
+    cancel.store(true, Ordering::Relaxed);
+    app.refresh();
+    assert!(
+        !app.main.context.is_editable(),
+        "shutdown must finish before editing resumes"
+    );
+    tx.send(Event::Finished(Ok(()))).unwrap();
+    app.poll();
+    assert!(app.main.context.is_editable());
+    assert!(app.main.context.is_cursor_visible());
+    assert_eq!(
+        app.recognition_context(),
+        "Different context for the next job"
+    );
+    app.main.context.buffer().set_text(" \n\t ");
+    assert!(app.recognition_context().is_empty());
+    assert_eq!(buffer_text(&app.rewrite.prompt), rewrite_instructions);
     app.preferences.window.destroy();
 }
 

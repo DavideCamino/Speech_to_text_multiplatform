@@ -58,10 +58,38 @@ fn rejects_non_audio_without_panicking() {
 
 #[test]
 fn worker_reports_model_errors_and_always_finishes() {
-    let job = transcription::start(Source::File("missing.wav".into()), Settings::default(), 0);
+    let job = transcription::start(
+        Source::File("missing.wav".into()),
+        Settings::default(),
+        0,
+        String::new(),
+    );
     loop {
         if let Event::Finished(result) = job.events.recv_timeout(Duration::from_secs(10)).unwrap() {
             assert!(result.unwrap_err().contains("model"));
+            break;
+        }
+    }
+}
+
+#[test]
+fn worker_receives_owned_context_and_reports_invalid_input_without_panicking() {
+    let mut context = String::from("private context\0invalid");
+    let job = transcription::start(
+        Source::File("missing.wav".into()),
+        Settings::default(),
+        0,
+        context.clone(),
+    );
+    context.clear();
+    loop {
+        if let Event::Finished(result) = job.events.recv_timeout(Duration::from_secs(10)).unwrap() {
+            let error = result.unwrap_err();
+            assert!(error.contains("Recognition context") && error.contains("NUL"));
+            assert!(
+                !error.contains("private context"),
+                "errors must not disclose context text"
+            );
             break;
         }
     }

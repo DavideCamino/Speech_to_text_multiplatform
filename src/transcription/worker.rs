@@ -45,7 +45,9 @@ impl Drop for Job {
     }
 }
 
-pub fn start(source: Source, settings: Settings, offset_ms: u64) -> Job {
+/// Start with owned settings and recognition-context snapshots. Context is
+/// explicit user input, never the previous pass's provisional hypothesis.
+pub fn start(source: Source, settings: Settings, offset_ms: u64, context: String) -> Job {
     let (tx, events) = mpsc::sync_channel(128);
     let cancel = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
@@ -68,7 +70,7 @@ pub fn start(source: Source, settings: Settings, offset_ms: u64) -> Job {
                     "Loading model… cancellation waits for model loading to finish".into(),
                 ),
             );
-            let engine = Engine::new(&settings, cancel.clone());
+            let engine = Engine::new(&settings, &context, cancel.clone());
             if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
                 return Ok(());
             }
