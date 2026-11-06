@@ -1,6 +1,11 @@
 //! Rewrite lifecycle and batched native TextBuffer Markdown rendering.
-use super::*;
+use super::{app::App, dialogs, views::buffer_text};
 use crate::llm;
+use adw::prelude::*;
+use std::{
+    rc::Rc,
+    sync::{atomic::Ordering, mpsc},
+};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -53,6 +58,80 @@ fn drain(job: &llm::Job) -> Vec<llm::Event> {
 }
 
 impl App {
+    pub(super) fn enter_rewrite(self: &Rc<Self>) {
+        let source = buffer_text(&self.main.transcript);
+        if source != buffer_text(&self.rewrite.source) {
+            if self.rewrite_dirty.get() {
+                let weak = Rc::downgrade(self);
+                dialogs::confirm(
+                    &self.window,
+                    "Use the new transcript?",
+                    "This will discard the previous unexported rewrite result.",
+                    &[("replace", "Use New Transcript")],
+                    move |response| {
+                        if response == "replace"
+                            && let Some(app) = weak.upgrade()
+                        {
+                            app.reset_rewrite();
+                        }
+                    },
+                );
+                return;
+            }
+            self.reset_rewrite();
+        } else {
+            self.stack.set_visible_child_name("rewrite");
+        }
+    }
+
+    pub(super) fn reset_rewrite(&self) {
+        self.rewrite
+            .source
+            .buffer()
+            .set_text(&buffer_text(&self.main.transcript));
+        self.rewrite_state.borrow_mut().markdown.clear();
+        self.rewrite.renderer.borrow_mut().reset();
+        self.rewrite.status.set_text("Ready");
+        self.rewrite_dirty.set(false);
+        self.stack.set_visible_child_name("rewrite");
+        self.refresh();
+    }
+
+    pub(super) fn refresh_rewrite_controls(&self) {
+        let busy = self.busy();
+        let state = self.rewrite_state.borrow();
+        let generating = state.job.is_some();
+        let connection_editable = !generating && state.test.is_none();
+        self.preferences.llm_host.set_sensitive(connection_editable);
+        self.preferences.llm_port.set_sensitive(connection_editable);
+        self.preferences
+            .llm_https
+            .set_sensitive(connection_editable);
+        self.preferences
+            .llm_token
+            .set_sensitive(connection_editable);
+        self.preferences.llm_test.set_sensitive(connection_editable);
+        self.rewrite
+            .run
+            .set_sensitive(!busy && state.test.is_none());
+        self.rewrite.prompt.set_editable(!generating);
+        self.rewrite.back.set_sensitive(!generating);
+        self.rewrite.stop.set_sensitive(
+            state
+                .job
+                .as_ref()
+                .is_some_and(|job| !job.cancel.load(Ordering::Relaxed)),
+        );
+        let has_result = !state.markdown.trim().is_empty();
+        for button in [
+            &self.rewrite.copy,
+            &self.rewrite.txt,
+            &self.rewrite.markdown,
+        ] {
+            button.set_sensitive(has_result && !generating);
+        }
+    }
+
     pub(super) fn llm_connection(&self) -> anyhow::Result<llm::Connection> {
         let connection = llm::Connection {
             host: self.preferences.llm_host.text().trim().to_owned(),
@@ -203,7 +282,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::plain_text;
     #[test]
     fn plain_text_export() {
         assert_eq!(

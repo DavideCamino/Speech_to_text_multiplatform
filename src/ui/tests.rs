@@ -1,4 +1,29 @@
-use super::*;
+use super::{
+    app::App,
+    export::ExportKind,
+    markdown_buffer, menu, models, preferences,
+    task::background,
+    text_zoom, transcript_buffer,
+    views::{MainView, RewriteView, buffer_text},
+};
+use crate::{
+    model,
+    settings::{self, Settings},
+    transcript::Transcript,
+    transcription::{self, Event, Job, Source},
+};
+use adw::prelude::*;
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
 
 #[test]
 fn settings_pages_and_menu_surfaces_build() {
@@ -19,10 +44,11 @@ fn settings_pages_and_menu_surfaces_build() {
     let parent = adw::ApplicationWindow::builder().build();
     device_discovery_states(&parent);
     language_selection(&parent);
-    recognition_context_controls(&parent);
-    prompt_placeholders_and_restore(&parent);
+    shared_app_construction();
+    recognition_context_controls();
+    prompt_placeholders_and_restore();
     model_library_window(&parent);
-    rewrite_generation_states(&parent);
+    rewrite_generation_states();
     editable_transcript();
     background_filesystem_states();
     let compiled = transcription::compiled_gpu_backends();
@@ -114,7 +140,7 @@ fn language_selection(parent: &adw::ApplicationWindow) {
             .unwrap();
         (dialog, entry)
     }
-    let app = test_app(parent);
+    let app = test_app();
     let language = &app.preferences.language;
     assert_eq!(language.dropdown.selected(), 5);
     let model = language.dropdown.model().unwrap();
@@ -257,11 +283,11 @@ fn language_selection(parent: &adw::ApplicationWindow) {
         );
         preferences.window.destroy();
     }
-    app.preferences.window.destroy();
+    app.window.destroy();
 }
 
-fn recognition_context_controls(parent: &adw::ApplicationWindow) {
-    let app = test_app(parent);
+fn recognition_context_controls() {
+    let app = test_app();
     app.connect_transcript_editing();
     app.refresh();
     let section = app
@@ -337,10 +363,10 @@ fn recognition_context_controls(parent: &adw::ApplicationWindow) {
     app.main.context.buffer().set_text(" \n\t ");
     assert!(app.recognition_context().is_empty());
     assert_eq!(buffer_text(&app.rewrite.prompt), rewrite_instructions);
-    app.preferences.window.destroy();
+    app.window.destroy();
 }
 
-fn prompt_placeholders_and_restore(parent: &adw::ApplicationWindow) {
+fn prompt_placeholders_and_restore() {
     fn hint(view: &gtk::TextView) -> gtk::Label {
         view.ancestor(gtk::Overlay::static_type())
             .unwrap()
@@ -351,7 +377,7 @@ fn prompt_placeholders_and_restore(parent: &adw::ApplicationWindow) {
             .downcast::<gtk::Label>()
             .unwrap()
     }
-    let app = test_app(parent);
+    let app = test_app();
     app.restore_prompts();
     let context_hint = hint(&app.main.context);
     let prompt_hint = hint(&app.rewrite.prompt);
@@ -414,7 +440,7 @@ fn prompt_placeholders_and_restore(parent: &adw::ApplicationWindow) {
     assert!(buffer_text(&app.rewrite.prompt).is_empty());
     assert!(context_hint.property::<bool>("visible"));
     assert!(prompt_hint.property::<bool>("visible"));
-    app.preferences.window.destroy();
+    app.window.destroy();
 }
 
 fn font_zoom_panes() {
@@ -453,47 +479,111 @@ fn font_zoom_panes() {
     }
 }
 
-fn test_app(parent: &adw::ApplicationWindow) -> Rc<App> {
-    let settings = Settings::default();
-    let recognized_zoom = Rc::new(text_zoom::ZoomGroup::default());
-    let main = MainView::new(&recognized_zoom);
-    let preferences = preferences::Preferences::new(parent, &settings);
-    let models = models::Models::new(&preferences.window);
-    Rc::new(App {
-        window: parent.clone(),
-        stack: gtk::Stack::new(),
-        transcript_buffer: RefCell::new(transcript_buffer::TranscriptBuffer::new(
-            main.transcript.buffer(),
-        )),
-        main,
-        preferences,
-        models,
-        model_scan: RefCell::default(),
-        model_check: RefCell::default(),
-        model_available: Cell::new(false),
-        download_check: RefCell::default(),
-        settings_writer: RefCell::new(settings::SaveWorker::with_save(|_| Ok(()))),
-        closing: Cell::new(false),
-        rewrite: RewriteView::new(&recognized_zoom),
-        rewrite_state: RefCell::default(),
-        settings: RefCell::new(settings),
-        transcript: RefCell::default(),
-        provisional: RefCell::default(),
-        job: RefCell::default(),
-        download: RefCell::default(),
-        device_discovery: RefCell::default(),
-        recording: Cell::new(false),
-        dirty: Cell::new(false),
-        text_dirty: Cell::new(false),
-        rendering_transcript: Cell::new(false),
-        rewrite_dirty: Cell::new(false),
-        allow_close: Cell::new(false),
-    })
+fn shared_app_construction() {
+    let (saved, snapshots) = mpsc::channel();
+    let settings = Settings {
+        language: Some("it".into()),
+        model: Some(PathBuf::from("models/ggml-base.bin")),
+        whisper_context: "Saved recognition context".into(),
+        llm_system_prompt: "Saved rewrite prompt".into(),
+        ..Settings::default()
+    };
+    let writer = settings::SaveWorker::with_save(move |settings| {
+        saved.send(settings).unwrap();
+        Ok(())
+    });
+    let app = App::new(None, settings, writer);
+    assert!(app.window.application().is_none());
+    assert!(!app.window.is_visible());
+    assert!(app.window.content().is_some());
+    assert_eq!(
+        app.stack.child_by_name("main"),
+        Some(app.main.root.clone().upcast())
+    );
+    assert_eq!(
+        app.stack.child_by_name("rewrite"),
+        Some(app.rewrite.root.clone().upcast())
+    );
+    assert_eq!(app.stack.visible_child_name().as_deref(), Some("main"));
+    assert_eq!(
+        app.preferences.language.selected_language().as_deref(),
+        Some("it")
+    );
+    assert_eq!(app.preferences.model_label.text(), "ggml-base.bin");
+    assert!(app.device_discovery.borrow().is_none());
+    assert!(app.model_scan.borrow().is_none());
+    assert!(app.model_check.borrow().is_none());
+    assert!(app.download_check.borrow().is_none());
+    assert!(!app.busy());
+    assert!(matches!(
+        snapshots.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    assert!(buffer_text(&app.main.context).is_empty());
+    assert!(buffer_text(&app.rewrite.prompt).is_empty());
+    app.restore_prompts();
+    assert_eq!(buffer_text(&app.main.context), "Saved recognition context");
+    assert_eq!(buffer_text(&app.rewrite.prompt), "Saved rewrite prompt");
+    app.main.progress.set_fraction(0.42);
+    assert_eq!(app.models.progress.fraction(), 0.42);
+    app.persist();
+    let saved = snapshots.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(saved.language.as_deref(), Some("it"));
+    assert_eq!(saved.whisper_context, "Saved recognition context");
+    wait_for(|| app.settings_writer.borrow_mut().poll().is_some());
+    app.window.destroy();
+    let weak = Rc::downgrade(&app);
+    drop(app);
+    assert!(
+        weak.upgrade().is_none(),
+        "construction must not retain the controller"
+    );
+
+    let application = adw::Application::builder()
+        .application_id("io.github.davidecamino.Speech2Text.Tests")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    application
+        .register(None::<&gtk::gio::Cancellable>)
+        .unwrap();
+    let app = App::new(
+        Some(&application),
+        Settings::default(),
+        settings::SaveWorker::with_save(|_| Ok(())),
+    );
+    assert_eq!(app.window.application(), Some(application.clone().upcast()));
+    app.connect();
+    app.refresh();
+    let open = app.window.lookup_action("open").unwrap();
+    assert!(!open.is_enabled());
+    app.model_available.set(true);
+    app.refresh();
+    assert!(open.is_enabled());
+    for (action, _, _) in menu::SHORTCUTS {
+        assert!(!application.accels_for_action(action).is_empty());
+    }
+    // Keep widgets alive after dropping App to catch strong callback cycles.
+    let window = app.window.clone();
+    let weak = Rc::downgrade(&app);
+    drop(app);
+    assert!(
+        weak.upgrade().is_none(),
+        "callbacks must not retain the controller"
+    );
+    window.destroy();
 }
 
-fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
+fn test_app() -> Rc<App> {
+    App::new(
+        None,
+        Settings::default(),
+        settings::SaveWorker::with_save(|_| Ok(())),
+    )
+}
+
+fn rewrite_generation_states() {
     use crate::llm;
-    let app = test_app(parent);
+    let app = test_app();
     // Asking to replace a model must not start work until explicit approval.
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join(model::CATALOG[0].file);
@@ -511,8 +601,6 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     assert_eq!(std::fs::read(&target).unwrap(), b"old model");
     dialog.close();
 
-    app.stack.add_named(&app.main.root, Some("main"));
-    app.stack.add_named(&app.rewrite.root, Some("rewrite"));
     app.rewrite
         .prompt
         .buffer()
@@ -596,14 +684,12 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     assert!(app.rewrite_markdown().is_empty());
     assert!(buffer_text(&app.rewrite.result).is_empty());
     assert!(!app.rewrite.copy.is_sensitive());
+    app.window.destroy();
 }
 
 fn editable_transcript() {
     use crate::transcript::Segment;
-    let parent = adw::ApplicationWindow::builder().build();
-    let app = test_app(&parent);
-    app.stack.add_named(&app.main.root, Some("main"));
-    app.stack.add_named(&app.rewrite.root, Some("rewrite"));
+    let app = test_app();
     app.connect();
     app.refresh();
     assert!(app.main.transcript.is_editable());
@@ -768,7 +854,7 @@ fn editable_transcript() {
             expected
         );
     }
-    parent.destroy();
+    app.window.destroy();
 }
 
 fn wait_for(mut condition: impl FnMut() -> bool) {
@@ -783,8 +869,7 @@ fn wait_for(mut condition: impl FnMut() -> bool) {
 }
 
 fn background_filesystem_states() {
-    let parent = adw::ApplicationWindow::builder().build();
-    let app = test_app(&parent);
+    let app = test_app();
     app.connect();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("model.bin");
@@ -873,8 +958,7 @@ fn background_filesystem_states() {
     });
 
     // A failed final save leaves the window usable and surfaces the error.
-    let parent = adw::ApplicationWindow::builder().build();
-    let app = test_app(&parent);
+    let app = test_app();
     app.connect();
     *app.settings_writer.borrow_mut() =
         settings::SaveWorker::with_save(|_| anyhow::bail!("simulated disk failure"));
@@ -887,6 +971,7 @@ fn background_filesystem_states() {
     assert!(!app.allow_close.get());
     assert!(app.window.is_sensitive());
     assert!(app.main.status.text().contains("simulated disk failure"));
+    app.window.destroy();
 }
 
 fn model_library_window(parent: &adw::ApplicationWindow) {
@@ -923,7 +1008,7 @@ fn model_library_window(parent: &adw::ApplicationWindow) {
         Some("Select Local Model…")
     );
     let other = PathBuf::from("models").join("ggml-small.bin");
-    let app = test_app(parent);
+    let app = test_app();
     let (saved, snapshots) = mpsc::channel();
     *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(move |settings| {
         saved.send(settings.model).unwrap();
@@ -955,7 +1040,7 @@ fn model_library_window(parent: &adw::ApplicationWindow) {
         app.model_check.borrow().is_none()
     });
     assert!(app.model_available.get());
-    app.preferences.window.destroy();
+    app.window.destroy();
 
     let chosen = Rc::new(RefCell::new(None));
     let observed = chosen.clone();
