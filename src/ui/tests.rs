@@ -18,6 +18,7 @@ fn settings_pages_and_menu_surfaces_build() {
     font_zoom_panes();
     let parent = adw::ApplicationWindow::builder().build();
     device_discovery_states(&parent);
+    language_selection(&parent);
     model_library_window(&parent);
     rewrite_generation_states(&parent);
     editable_transcript();
@@ -88,6 +89,168 @@ fn settings_pages_and_menu_surfaces_build() {
             window.destroy();
         }
     }
+}
+
+fn language_selection(parent: &adw::ApplicationWindow) {
+    fn popup() -> (adw::MessageDialog, gtk::Entry) {
+        let dialog = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+            .find(|dialog| dialog.heading().as_deref() == Some("Custom language"))
+            .expect("custom language popup");
+        let entry = dialog
+            .extra_child()
+            .unwrap()
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Entry>()
+            .unwrap();
+        (dialog, entry)
+    }
+    let app = test_app(parent);
+    let language = &app.preferences.language;
+    assert_eq!(language.dropdown.selected(), 5);
+    let model = language.dropdown.model().unwrap();
+    let names: Vec<_> = (0..model.n_items())
+        .map(|i| {
+            model
+                .item(i)
+                .unwrap()
+                .downcast::<gtk::StringObject>()
+                .unwrap()
+                .string()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "English",
+            "Italian",
+            "French",
+            "Spanish",
+            "German",
+            "Auto",
+            "Custom…"
+        ]
+    );
+    for (index, code) in [
+        Some("en"),
+        Some("it"),
+        Some("fr"),
+        Some("es"),
+        Some("de"),
+        None,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        language.dropdown.set_selected(index as u32);
+        app.persist_controls();
+        assert_eq!(language.selected_language().as_deref(), code);
+        assert_eq!(app.settings.borrow().language.as_deref(), code);
+    }
+    language.dropdown.set_selected(0);
+    language.dropdown.set_selected(6);
+    let (dialog, entry) = popup();
+    assert!(!dialog.is_response_enabled("apply"));
+    entry.set_text("not-a-language");
+    assert!(!dialog.is_response_enabled("apply"));
+    assert_eq!(language.selected_language().as_deref(), Some("en"));
+    dialog.response("cancel");
+    assert_eq!(language.dropdown.selected(), 0);
+    assert_eq!(language.selected_language().as_deref(), Some("en"));
+    dialog.close();
+
+    language.dropdown.set_selected(6);
+    let (dialog, entry) = popup();
+    entry.set_text(" PT ");
+    assert!(dialog.is_response_enabled("apply"));
+    dialog.response("apply");
+    assert_eq!(language.dropdown.selected(), 6);
+    assert_eq!(language.selected_language().as_deref(), Some("pt"));
+    app.persist_controls();
+    assert_eq!(app.settings.borrow().language.as_deref(), Some("pt"));
+    dialog.close();
+    let edit = language
+        .dropdown
+        .next_sibling()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    assert!(edit.property::<bool>("visible"));
+    edit.emit_clicked();
+    let (dialog, entry) = popup();
+    assert_eq!(entry.text(), "pt");
+    entry.set_text("ja");
+    dialog.close();
+    assert_eq!(language.selected_language().as_deref(), Some("pt"));
+
+    // Reopening Custom remembers the previous code; Cancel restores the preset.
+    language.dropdown.set_selected(1);
+    language.dropdown.set_selected(6);
+    let (dialog, entry) = popup();
+    assert_eq!(entry.text(), "pt");
+    entry.set_text("ja");
+    dialog.response("cancel");
+    assert_eq!(language.dropdown.selected(), 1);
+    assert_eq!(language.selected_language().as_deref(), Some("it"));
+    dialog.close();
+    language.dropdown.set_selected(6);
+    let (dialog, entry) = popup();
+    entry.set_text(" FR ");
+    dialog.response("apply");
+    assert_eq!(language.dropdown.selected(), 2);
+    dialog.close();
+    language.dropdown.set_selected(6);
+    let (dialog, entry) = popup();
+    entry.set_text("AUTO");
+    dialog.response("apply");
+    assert_eq!(language.dropdown.selected(), 5);
+    assert_eq!(language.selected_language(), None);
+    dialog.close();
+
+    // Even a programmatic Apply cannot commit an invalid or busy-state choice.
+    language.dropdown.set_selected(6);
+    let (dialog, entry) = popup();
+    entry.set_text("invalid");
+    dialog.response("apply");
+    assert_eq!(language.dropdown.selected(), 5);
+    dialog.close();
+    language.dropdown.set_selected(6);
+    let (dialog, entry) = popup();
+    entry.set_text("ja");
+    language.set_sensitive(false);
+    assert!(!language.dropdown.is_sensitive());
+    dialog.response("apply");
+    assert_eq!(language.selected_language(), None);
+    dialog.close();
+    language.set_sensitive(true);
+
+    for (saved, index, expected) in [
+        (None, 5, None),
+        (Some("en"), 0, Some("en")),
+        (Some("it"), 1, Some("it")),
+        (Some("fr"), 2, Some("fr")),
+        (Some("es"), 3, Some("es")),
+        (Some("de"), 4, Some("de")),
+        (Some("auto"), 5, None),
+        (Some("pt"), 6, Some("pt")),
+        (Some(" JA "), 6, Some("ja")),
+    ] {
+        let settings = Settings {
+            language: saved.map(str::to_owned),
+            ..Settings::default()
+        };
+        let preferences = preferences::Preferences::new(parent, &settings);
+        assert_eq!(preferences.language.dropdown.selected(), index);
+        assert_eq!(
+            preferences.language.selected_language().as_deref(),
+            expected
+        );
+        preferences.window.destroy();
+    }
+    app.preferences.window.destroy();
 }
 
 fn font_zoom_panes() {

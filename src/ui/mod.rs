@@ -588,12 +588,7 @@ impl App {
     fn persist_controls(&self) {
         {
             let mut settings = self.settings.borrow_mut();
-            let language = self.preferences.language.text().trim().to_lowercase();
-            settings.language = if language.is_empty() || language == "auto" {
-                None
-            } else {
-                Some(language)
-            };
+            settings.language = self.preferences.language.selected_language();
             settings.use_gpu = self.preferences.gpu.is_active();
             settings.gpu_backend = self
                 .preferences

@@ -2,7 +2,214 @@
 use crate::settings::Settings;
 use adw::prelude::*;
 use gtk::Align;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
+
+const LANGUAGES: &[(&str, Option<&str>)] = &[
+    ("English", Some("en")),
+    ("Italian", Some("it")),
+    ("French", Some("fr")),
+    ("Spanish", Some("es")),
+    ("German", Some("de")),
+    ("Auto", None),
+];
+const CUSTOM_LANGUAGE: u32 = LANGUAGES.len() as u32;
+
+#[derive(Default)]
+struct LanguageSelection {
+    value: RefCell<Option<String>>,
+    custom: RefCell<String>,
+    dialog_open: Cell<bool>,
+}
+
+impl LanguageSelection {
+    fn index(&self) -> u32 {
+        LANGUAGES
+            .iter()
+            .position(|(_, code)| *code == self.value.borrow().as_deref())
+            .map_or(CUSTOM_LANGUAGE, |index| index as u32)
+    }
+}
+
+pub struct LanguageSelector {
+    pub dropdown: gtk::DropDown,
+    row: adw::ActionRow,
+    state: Rc<LanguageSelection>,
+}
+
+impl LanguageSelector {
+    fn new(window: &adw::PreferencesWindow, saved: Option<&str>) -> Self {
+        let value = saved
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty() && s != "auto");
+        let state = Rc::new(LanguageSelection {
+            value: RefCell::new(value),
+            ..Default::default()
+        });
+        if state.index() == CUSTOM_LANGUAGE {
+            *state.custom.borrow_mut() = state.value.borrow().clone().unwrap();
+        }
+        let mut names: Vec<_> = LANGUAGES.iter().map(|(name, _)| *name).collect();
+        names.push("Custom…");
+        let dropdown = gtk::DropDown::from_strings(&names);
+        dropdown.set_valign(Align::Center);
+        dropdown.set_selected(state.index());
+        let row = adw::ActionRow::builder()
+            .title("Spoken language")
+            .use_markup(false)
+            .build();
+        let edit = gtk::Button::with_label("Edit…");
+        edit.set_valign(Align::Center);
+        edit.set_tooltip_text(Some("Edit custom Whisper language code"));
+        row.add_suffix(&dropdown);
+        row.add_suffix(&edit);
+        Self::update_row(&row, &edit, &state);
+        let weak_window = window.downgrade();
+        let weak_row = row.downgrade();
+        let weak_edit = edit.downgrade();
+        let choice = state.clone();
+        dropdown.connect_selected_notify(move |dropdown| {
+            if choice.dialog_open.get() {
+                return;
+            }
+            let (Some(window), Some(row), Some(edit)) = (
+                weak_window.upgrade(),
+                weak_row.upgrade(),
+                weak_edit.upgrade(),
+            ) else {
+                return;
+            };
+            if dropdown.selected() == CUSTOM_LANGUAGE {
+                Self::custom_dialog(&window, dropdown, &row, &edit, &choice);
+            } else if let Some((_, code)) = LANGUAGES.get(dropdown.selected() as usize) {
+                *choice.value.borrow_mut() = code.map(str::to_owned);
+                Self::update_row(&row, &edit, &choice);
+            }
+        });
+        let weak_window = window.downgrade();
+        let weak_row = row.downgrade();
+        let weak_dropdown = dropdown.downgrade();
+        let choice = state.clone();
+        edit.connect_clicked(move |edit| {
+            if let (Some(window), Some(dropdown), Some(row)) = (
+                weak_window.upgrade(),
+                weak_dropdown.upgrade(),
+                weak_row.upgrade(),
+            ) {
+                Self::custom_dialog(&window, &dropdown, &row, edit, &choice);
+            }
+        });
+        Self {
+            dropdown,
+            row,
+            state,
+        }
+    }
+
+    fn update_row(row: &adw::ActionRow, edit: &gtk::Button, state: &LanguageSelection) {
+        let custom = state.index() == CUSTOM_LANGUAGE;
+        edit.set_visible(custom);
+        if custom {
+            row.set_subtitle(&format!(
+                "Custom Whisper language code: {}",
+                state.value.borrow().as_deref().unwrap_or_default()
+            ));
+        } else {
+            row.set_subtitle("Choose the spoken language, or Auto for automatic detection");
+        }
+    }
+
+    fn custom_dialog(
+        window: &adw::PreferencesWindow,
+        dropdown: &gtk::DropDown,
+        row: &adw::ActionRow,
+        edit: &gtk::Button,
+        state: &Rc<LanguageSelection>,
+    ) {
+        if !dropdown.is_sensitive() || state.dialog_open.replace(true) {
+            return;
+        }
+        let dialog = adw::MessageDialog::new(
+            Some(window),
+            Some("Custom language"),
+            Some(
+                "Enter a Whisper language code, for example pt, ja, or zh. Use auto for automatic detection.",
+            ),
+        );
+        dialog.set_destroy_with_parent(true);
+        dialog.add_responses(&[("cancel", "Cancel"), ("apply", "Apply")]);
+        dialog.set_close_response("cancel");
+        dialog.set_default_response(Some("apply"));
+        dialog.set_response_appearance("apply", adw::ResponseAppearance::Suggested);
+        let entry = gtk::Entry::builder()
+            .placeholder_text("Whisper language code")
+            .text(state.custom.borrow().as_str())
+            .activates_default(true)
+            .build();
+        let error = gtk::Label::builder()
+            .label("Enter a supported Whisper language code.")
+            .wrap(true)
+            .build();
+        error.add_css_class("error");
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.append(&entry);
+        content.append(&error);
+        dialog.set_extra_child(Some(&content));
+        let validate = |text: &str| {
+            let code = text.trim().to_lowercase();
+            // Enumerate the built-in code table rather than calling get_lang_id
+            // on each keystroke: that API logs errors for incomplete input.
+            code == "auto"
+                || (0..=whisper_rs::get_lang_max_id())
+                    .any(|id| whisper_rs::get_lang_str(id) == Some(code.as_str()))
+        };
+        dialog.set_response_enabled("apply", validate(&entry.text()));
+        error.set_visible(!entry.text().is_empty() && !validate(&entry.text()));
+        let weak_dialog = dialog.downgrade();
+        entry.connect_changed(move |entry| {
+            let valid = validate(&entry.text());
+            error.set_visible(!entry.text().is_empty() && !valid);
+            if let Some(dialog) = weak_dialog.upgrade() {
+                dialog.set_response_enabled("apply", valid);
+            }
+        });
+        let weak_dropdown = dropdown.downgrade();
+        let weak_row = row.downgrade();
+        let weak_edit = edit.downgrade();
+        let choice = state.clone();
+        let response_entry = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if let Some(dropdown) = weak_dropdown.upgrade() {
+                let code = response_entry.text().trim().to_lowercase();
+                if response == "apply" && dropdown.is_sensitive() && validate(&code) {
+                    *choice.value.borrow_mut() = (code != "auto").then(|| code.clone());
+                    if choice.index() == CUSTOM_LANGUAGE {
+                        *choice.custom.borrow_mut() = code;
+                    }
+                }
+                // Restore the previous accepted value on Cancel/invalid input.
+                dropdown.set_selected(choice.index());
+                if let (Some(row), Some(edit)) = (weak_row.upgrade(), weak_edit.upgrade()) {
+                    Self::update_row(&row, &edit, &choice);
+                }
+            }
+            choice.dialog_open.set(false);
+        });
+        dialog.present();
+        entry.grab_focus();
+    }
+
+    pub fn selected_language(&self) -> Option<String> {
+        self.state.value.borrow().clone()
+    }
+
+    pub fn set_sensitive(&self, sensitive: bool) {
+        self.dropdown.set_sensitive(sensitive);
+        self.row.set_sensitive(sensitive);
+    }
+}
 
 pub struct Preferences {
     pub window: adw::PreferencesWindow,
@@ -16,7 +223,7 @@ pub struct Preferences {
     pub select_model: gtk::Button,
     pub gpu: gtk::Switch,
     pub gpu_backend: gtk::DropDown,
-    pub language: gtk::Entry,
+    pub language: LanguageSelector,
     pub device: gtk::DropDown,
     pub device_refresh: gtk::Button,
     pub device_row: adw::ActionRow,
@@ -119,18 +326,8 @@ impl Preferences {
                 }
             });
         }
-        let language = gtk::Entry::builder()
-            .placeholder_text("auto, en, it, fr…")
-            .text(settings.language.as_deref().unwrap_or("auto"))
-            .valign(Align::Center)
-            .width_chars(12)
-            .build();
-        let language_row = adw::ActionRow::builder()
-            .title("Spoken language")
-            .subtitle("Whisper language code, or auto")
-            .build();
-        language_row.add_suffix(&language);
-        config.add(&language_row);
+        let language = LanguageSelector::new(&window, settings.language.as_deref());
+        config.add(&language.row);
         // Preserve the saved name before discovery completes. Constructing
         // widgets must never open/enumerate native audio devices on GTK's thread.
         let devices: Vec<String> = settings.device.iter().cloned().collect();
