@@ -91,11 +91,8 @@ pub fn save(
         None::<&gtk::gio::Cancellable>,
         move |result| match result {
             Ok(file) => {
-                let content = content.clone();
-                let parent = parent.clone();
                 // GIO asynchronous writes support the desktop file chooser's locations
                 // and keep slow disks/network mounts off the main loop.
-                let done = std::rc::Rc::new(done);
                 file.replace_contents_async(
                     content.into_bytes(),
                     None,

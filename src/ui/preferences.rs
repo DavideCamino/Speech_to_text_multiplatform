@@ -4,6 +4,7 @@ use adw::prelude::*;
 use gtk::Align;
 use std::{
     cell::{Cell, RefCell},
+    path::Path,
     rc::Rc,
 };
 
@@ -253,14 +254,7 @@ impl Preferences {
         let config = adw::PreferencesGroup::builder()
             .title("Recognition")
             .build();
-        let model_name = settings
-            .model
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "No model selected".into());
         let model_label = gtk::Label::builder()
-            .label(&model_name)
             .ellipsize(gtk::pango::EllipsizeMode::Middle)
             .max_width_chars(24)
             .build();
@@ -392,7 +386,7 @@ impl Preferences {
         connection.add(&llm_status);
         llm.add(&connection);
         window.add(&llm);
-        Self {
+        let preferences = Self {
             llm_host,
             llm_port,
             llm_https,
@@ -412,7 +406,19 @@ impl Preferences {
             device_loading: Cell::new(false),
             device_unavailable: Cell::new(settings.device.as_ref().map(|_| 1)),
             device_error: RefCell::new(None),
-        }
+        };
+        preferences.set_model(settings.model.as_deref());
+        preferences
+    }
+
+    pub fn set_model(&self, path: Option<&Path>) {
+        let name = path
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "No model selected".into());
+        self.model_label.set_text(&name);
+        self.select_model
+            .set_tooltip_text(path.map(Path::to_string_lossy).as_deref());
     }
 
     pub fn selected_device(&self) -> Option<String> {

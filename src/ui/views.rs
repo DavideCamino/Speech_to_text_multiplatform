@@ -237,7 +237,7 @@ impl RewriteView {
             "Required instructions for the LLM. For example: Rewrite this team meeting transcript as clear notes, preserving facts, decisions, and action items. Do not invent information.",
         );
         let prompt_section = gtk::Expander::builder()
-            .label("Sistem Prompt (required)")
+            .label("System Prompt (required)")
             .expanded(false)
             .child(&prompt_content)
             .build();

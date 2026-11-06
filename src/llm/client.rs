@@ -74,10 +74,9 @@ impl Client {
         Ok(response)
     }
     pub async fn model(&self) -> Result<String> {
-        let response = self
+        let mut response = self
             .response(self.request(reqwest::Method::GET, "v1/models"))
             .await?;
-        let mut response = response;
         let mut bytes = Vec::new();
         loop {
             let chunk = interruptible(&self.cancel, async {

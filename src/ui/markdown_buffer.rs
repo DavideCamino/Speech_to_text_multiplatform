@@ -98,7 +98,6 @@ fn parse(markdown: &str) -> Document {
     ) {
         match event {
             Event::Start(tag) => {
-                let end = tag.to_end();
                 let style = match tag {
                     Tag::Heading { level, .. } => {
                         doc.breaks(2);
@@ -130,7 +129,7 @@ fn parse(markdown: &str) -> Document {
                         } else {
                             doc.push("• ");
                         }
-                        open.push((end, Some((Style::List(lists.len().min(8) as u8), start))));
+                        open.push(Some((Style::List(lists.len().min(8) as u8), start)));
                         continue;
                     }
                     Tag::Link { .. } => Some(Style::Link),
@@ -138,10 +137,10 @@ fn parse(markdown: &str) -> Document {
                     // literally below, never interpreted as markup.
                     _ => None,
                 };
-                open.push((end, style.map(|style| (style, doc.length))));
+                open.push(style.map(|style| (style, doc.length)));
             }
             Event::End(end) => {
-                if let Some((_, Some((style, start)))) = open.pop() {
+                if let Some(Some((style, start))) = open.pop() {
                     doc.spans.push(Span {
                         start,
                         end: doc.length,

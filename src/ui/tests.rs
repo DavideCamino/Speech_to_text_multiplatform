@@ -65,7 +65,7 @@ fn settings_pages_and_menu_surfaces_build() {
     assert!(buffer_text(&rewrite.prompt).is_empty());
     assert_eq!(
         rewrite.prompt_section.label().as_deref(),
-        Some("Sistem Prompt (required)")
+        Some("System Prompt (required)")
     );
     assert!(!rewrite.prompt_section.is_expanded());
     assert!(!rewrite.stop.is_sensitive());
@@ -533,7 +533,7 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
             app.rewrite
                 .status
                 .text()
-                .contains("Sistem Prompt (required) must not be empty")
+                .contains("System Prompt (required) must not be empty")
         );
     }
     app.rewrite.prompt.buffer().set_text(&saved_prompt);
@@ -900,6 +900,19 @@ fn model_library_window(parent: &adw::ApplicationWindow) {
     );
     assert_eq!(preferences.model_label.text(), "ggml-tiny.bin");
     assert_eq!(
+        preferences.select_model.tooltip_text().as_deref(),
+        Some(selected.to_string_lossy().as_ref())
+    );
+    preferences.set_model(None);
+    assert_eq!(preferences.model_label.text(), "No model selected");
+    assert!(preferences.select_model.tooltip_text().is_none());
+    preferences.set_model(Some(&selected));
+    assert_eq!(preferences.model_label.text(), "ggml-tiny.bin");
+    assert_eq!(
+        preferences.select_model.tooltip_text().as_deref(),
+        Some(selected.to_string_lossy().as_ref())
+    );
+    assert_eq!(
         preferences.select_model.child(),
         Some(preferences.model_label.clone().upcast())
     );
@@ -910,6 +923,40 @@ fn model_library_window(parent: &adw::ApplicationWindow) {
         Some("Select Local Model…")
     );
     let other = PathBuf::from("models").join("ggml-small.bin");
+    let app = test_app(parent);
+    let (saved, snapshots) = mpsc::channel();
+    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(move |settings| {
+        saved.send(settings.model).unwrap();
+        Ok(())
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let accepted = directory.path().join("ggml-small.bin");
+    std::fs::write(&accepted, b"test model").unwrap();
+    // The shared acceptance path updates presentation and queues one save.
+    app.accept_model(accepted.clone());
+    assert_eq!(app.settings.borrow().model.as_ref(), Some(&accepted));
+    assert_eq!(app.preferences.model_label.text(), "ggml-small.bin");
+    assert_eq!(
+        app.preferences.select_model.tooltip_text().as_deref(),
+        Some(accepted.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        snapshots.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(accepted)
+    );
+    wait_for(|| app.settings_writer.borrow_mut().poll().is_some());
+    assert!(matches!(
+        snapshots.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    assert!(app.model_check.borrow().is_some());
+    wait_for(|| {
+        app.poll_model_check();
+        app.model_check.borrow().is_none()
+    });
+    assert!(app.model_available.get());
+    app.preferences.window.destroy();
+
     let chosen = Rc::new(RefCell::new(None));
     let observed = chosen.clone();
     models.set_entries(
@@ -946,9 +993,9 @@ fn model_library_window(parent: &adw::ApplicationWindow) {
 #[test]
 fn microphone_discovery_runs_on_a_background_thread_and_reports_errors() {
     let ui_thread = std::thread::current().id();
-    let events = discover_devices(move || {
+    let events = background(move || {
         assert_ne!(std::thread::current().id(), ui_thread);
-        Ok(vec!["USB microphone".into()])
+        Ok::<Vec<String>, String>(vec!["USB microphone".into()])
     });
     assert_eq!(
         events
@@ -957,7 +1004,7 @@ fn microphone_discovery_runs_on_a_background_thread_and_reports_errors() {
             .unwrap(),
         vec!["USB microphone"]
     );
-    let events = discover_devices(|| Err("Permission denied".into()));
+    let events = background(|| Err::<Vec<String>, String>("Permission denied".into()));
     assert_eq!(
         events
             .recv_timeout(Duration::from_secs(5))

@@ -33,6 +33,10 @@ use std::{
 };
 use views::{MainView, RewriteView, buffer_text};
 
+const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(30);
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(80);
+const REWRITE_PANES_BREAKPOINT: i32 = 800;
+
 enum DownloadEvent {
     Progress(f64),
     Finished(Result<PathBuf, String>),
@@ -62,12 +66,6 @@ fn background<T: Send + 'static>(operation: impl FnOnce() -> T + Send + 'static)
         let _ = tx.send(operation());
     });
     events
-}
-
-fn discover_devices(
-    discover: impl FnOnce() -> Result<Vec<String>, String> + Send + 'static,
-) -> DeviceDiscovery {
-    background(discover)
 }
 
 #[derive(Clone, Copy)]
@@ -129,7 +127,7 @@ pub fn build(application: &adw::Application) {
     loading.present();
     let events = background(|| Settings::load().map_err(|error| format!("{error:#}")));
     let application = application.clone();
-    gtk::glib::timeout_add_local(Duration::from_millis(30), move || {
+    gtk::glib::timeout_add_local(STARTUP_POLL_INTERVAL, move || {
         if !loading.is_visible() {
             return gtk::glib::ControlFlow::Break;
         }
@@ -225,7 +223,7 @@ fn build_loaded(application: &adw::Application, settings: Settings, load_error: 
     }
     // This main-loop source owns the controller until the window closes. All
     // widget callbacks hold weak references, avoiding widget/controller cycles.
-    gtk::glib::timeout_add_local(Duration::from_millis(80), move || {
+    gtk::glib::timeout_add_local(WORKER_POLL_INTERVAL, move || {
         if !app.window.is_visible() {
             app.job.borrow_mut().take();
             app.download.borrow_mut().take();
@@ -234,7 +232,7 @@ fn build_loaded(application: &adw::Application, settings: Settings, load_error: 
             return gtk::glib::ControlFlow::Break;
         }
         app.poll();
-        let orientation = if app.window.width() < 800 {
+        let orientation = if app.window.width() < REWRITE_PANES_BREAKPOINT {
             gtk::Orientation::Vertical
         } else {
             gtk::Orientation::Horizontal
@@ -633,27 +631,14 @@ impl App {
             return;
         }
         self.preferences.begin_device_refresh();
-        *self.device_discovery.borrow_mut() = Some(discover_devices(|| {
+        *self.device_discovery.borrow_mut() = Some(background(|| {
             crate::audio::input_devices().map_err(|error| format!("{error:#}"))
         }));
     }
 
     fn update_model_label(&self) {
         let settings = self.settings.borrow();
-        let text = settings
-            .model
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "No model selected".into());
-        self.preferences.model_label.set_text(&text);
-        self.preferences.select_model.set_tooltip_text(
-            settings
-                .model
-                .as_ref()
-                .map(|p| p.to_string_lossy())
-                .as_deref(),
-        );
+        self.preferences.set_model(settings.model.as_deref());
         drop(settings);
         // Replacing the receiver discards late results for an older selection.
         self.model_check.borrow_mut().take();
@@ -937,24 +922,25 @@ impl App {
         if !self.busy() {
             self.models.status.set_text("Loading installed models…");
         }
-        let (tx, events) = mpsc::sync_channel(1);
         // Replace any older scan: late results cannot overwrite a newer list.
-        *self.model_scan.borrow_mut() = Some(events);
+        *self.model_scan.borrow_mut() = Some(background(move || {
+            model::installed(&directory).map_err(|error| format!("{error:#}"))
+        }));
         self.refresh();
-        std::thread::spawn(move || {
-            let _ = tx.send(model::installed(&directory).map_err(|e| format!("{e:#}")));
-        });
     }
 
     fn select_model(&self, path: PathBuf) {
         if self.busy() {
             return;
         }
+        self.accept_model(path);
+        self.models.window.close();
+    }
+
+    fn accept_model(&self, path: PathBuf) {
         self.settings.borrow_mut().model = Some(path);
         self.persist();
         self.update_model_label();
-        self.refresh();
-        self.models.window.close();
     }
 
     fn ask_import(self: &Rc<Self>, path: PathBuf) {
@@ -1340,9 +1326,7 @@ impl App {
                     self.download.borrow_mut().take();
                     match result {
                         Ok(path) => {
-                            self.settings.borrow_mut().model = Some(path);
-                            self.persist();
-                            self.update_model_label();
+                            self.accept_model(path);
                             self.main.status.set_text("Model ready.");
                             self.refresh_models();
                         }

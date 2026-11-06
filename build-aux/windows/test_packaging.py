@@ -21,6 +21,30 @@ LICENSE_SPEC.loader.exec_module(LICENSES)
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_copy_tree_skips_missing_optional_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "destination"
+            self.assertIsNone(PACKAGE.copy_tree(root / "missing", destination))
+            self.assertFalse(destination.exists())
+
+    def test_copy_tree_rejects_missing_required_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "destination"
+            with self.assertRaisesRegex(ValueError, "Required runtime resources"):
+                PACKAGE.copy_tree(root / "missing", destination, required=True)
+            self.assertFalse(destination.exists())
+
+    def test_copy_tree_copies_existing_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, destination = root / "source", root / "destination"
+            (source / "nested").mkdir(parents=True)
+            (source / "nested/resource.txt").write_text("runtime resource")
+            self.assertIsNone(PACKAGE.copy_tree(source, destination, required=True))
+            self.assertEqual((destination / "nested/resource.txt").read_text(), "runtime resource")
+
     def test_installer_displays_combined_licensing_notice(self):
         installer = (HERE / "installer.iss").read_text()
         self.assertIn(r"LicenseFile=..\..\LICENSES.txt", installer)

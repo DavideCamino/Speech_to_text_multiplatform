@@ -86,13 +86,12 @@ def collect_dlls(prefix: Path, bundle: Path, seeds: list[Path], read_imports) ->
     return {"bundled_dlls": sorted(copied), "windows_system_dlls": sorted(system)}
 
 
-def copy_tree(source: Path, destination: Path, *, required: bool = False) -> bool:
+def copy_tree(source: Path, destination: Path, *, required: bool = False) -> None:
     if not source.is_dir():
         if required:
             raise ValueError(f"Required runtime resources are missing: {source}")
-        return False
+        return
     shutil.copytree(source, destination, dirs_exist_ok=True)
-    return True
 
 
 def tool(prefix: Path, name: str) -> Path:
