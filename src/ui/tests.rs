@@ -62,6 +62,11 @@ fn settings_pages_and_menu_surfaces_build() {
     let rewrite = RewriteView::new(&Rc::new(text_zoom::ZoomGroup::default()));
     assert_eq!(rewrite.run.label().as_deref(), Some("Rewrite"));
     assert!(!buffer_text(&rewrite.prompt).is_empty());
+    assert_eq!(
+        rewrite.prompt_section.label().as_deref(),
+        Some("Sistem Prompt (required)")
+    );
+    assert!(!rewrite.prompt_section.is_expanded());
     assert!(!rewrite.stop.is_sensitive());
     rewrite
         .renderer
@@ -430,6 +435,34 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
 
     app.stack.add_named(&app.main.root, Some("main"));
     app.stack.add_named(&app.rewrite.root, Some("rewrite"));
+    let saved_prompt = buffer_text(&app.rewrite.prompt);
+    assert!(!app.rewrite.prompt_section.is_expanded());
+    app.rewrite.prompt_section.set_expanded(true);
+    app.rewrite.prompt_section.set_expanded(false);
+    assert_eq!(buffer_text(&app.rewrite.prompt), saved_prompt);
+    app.rewrite.source.buffer().set_text("Original transcript");
+    for empty in ["", " \n\t "] {
+        app.rewrite.prompt.buffer().set_text(empty);
+        app.rewrite.prompt_section.set_expanded(false);
+        app.start_rewrite();
+        assert!(app.rewrite_state.borrow().job.is_none());
+        assert!(app.rewrite.prompt_section.is_expanded());
+        assert!(
+            app.rewrite
+                .status
+                .text()
+                .contains("Sistem Prompt (required) must not be empty")
+        );
+    }
+    app.rewrite.prompt.buffer().set_text(&saved_prompt);
+    app.rewrite.source.buffer().set_text("");
+    app.start_rewrite();
+    assert!(app.rewrite_state.borrow().job.is_none());
+    assert_eq!(
+        app.rewrite.status.text(),
+        "Original text must not be empty."
+    );
+    app.rewrite.prompt_section.set_expanded(false);
     app.preferences.llm_port.set_text("not-a-port");
     assert!(app.llm_connection().is_err());
     app.preferences.llm_port.set_text("8080");
@@ -444,6 +477,12 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     assert!(app.busy());
     assert!(!app.rewrite.run.is_sensitive());
     assert!(!app.rewrite.prompt.is_editable());
+    assert!(app.rewrite.prompt_section.is_sensitive());
+    app.rewrite.prompt_section.set_expanded(true);
+    assert!(app.rewrite.prompt_section.is_expanded());
+    assert!(!app.rewrite.prompt.is_editable());
+    app.rewrite.prompt_section.set_expanded(false);
+    assert_eq!(buffer_text(&app.rewrite.prompt), saved_prompt);
     assert!(!app.rewrite.back.is_sensitive());
     assert!(app.rewrite.stop.is_sensitive());
     assert!(!app.preferences.llm_token.is_sensitive());
@@ -467,6 +506,8 @@ fn rewrite_generation_states(parent: &adw::ApplicationWindow) {
     assert_eq!(app.rewrite_markdown(), "# Live\n\n**Partial** output");
     assert!(app.rewrite.copy.is_sensitive());
     assert!(app.rewrite.run.is_sensitive());
+    assert!(app.rewrite.prompt.is_editable());
+    assert_eq!(buffer_text(&app.rewrite.prompt), saved_prompt);
     assert!(!app.rewrite.stop.is_sensitive());
     app.reset_rewrite();
     assert!(!app.rewrite_dirty.get());

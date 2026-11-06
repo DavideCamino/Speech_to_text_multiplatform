@@ -92,6 +92,22 @@ impl App {
         if self.busy() || self.rewrite_state.borrow().test.is_some() {
             return;
         }
+        let prompt = buffer_text(&self.rewrite.prompt);
+        if prompt.trim().is_empty() {
+            self.rewrite
+                .status
+                .set_text("Sistem Prompt (required) must not be empty.");
+            self.rewrite.prompt_section.set_expanded(true);
+            self.rewrite.prompt.grab_focus();
+            return;
+        }
+        let text = buffer_text(&self.rewrite.source);
+        if text.trim().is_empty() {
+            self.rewrite
+                .status
+                .set_text("Original text must not be empty.");
+            return;
+        }
         let connection = match self.llm_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -99,14 +115,6 @@ impl App {
                 return;
             }
         };
-        let prompt = buffer_text(&self.rewrite.prompt);
-        let text = buffer_text(&self.rewrite.source);
-        if prompt.trim().is_empty() || text.trim().is_empty() {
-            self.rewrite
-                .status
-                .set_text("Instructions and original text must not be empty.");
-            return;
-        }
         self.settings.borrow_mut().llm = connection.clone();
         self.persist();
         {

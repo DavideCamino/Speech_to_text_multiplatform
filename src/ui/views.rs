@@ -27,12 +27,14 @@ pub fn pane(title: &str, view: &impl IsA<gtk::Widget>) -> gtk::Box {
 
 fn pane_with_zoom(title: &str, view: &impl IsA<gtk::Widget>, zoom: &Rc<ZoomGroup>) -> gtk::Box {
     let container = column(8);
-    let label = gtk::Label::builder()
-        .label(title)
-        .halign(Align::Start)
-        .build();
-    label.add_css_class("heading");
-    container.append(&label);
+    if !title.is_empty() {
+        let label = gtk::Label::builder()
+            .label(title)
+            .halign(Align::Start)
+            .build();
+        label.add_css_class("heading");
+        container.append(&label);
+    }
     let scroll = gtk::ScrolledWindow::builder()
         .child(view)
         .vexpand(true)
@@ -169,6 +171,7 @@ pub struct RewriteView {
     pub run: gtk::Button,
     pub source: gtk::TextView,
     pub prompt: gtk::TextView,
+    pub prompt_section: gtk::Expander,
     pub result: gtk::TextView,
     pub renderer: RefCell<super::markdown_buffer::MarkdownBuffer>,
     pub stop: gtk::Button,
@@ -192,11 +195,16 @@ impl RewriteView {
         let prompt = text_view(true);
         prompt.set_vexpand(false);
         prompt.buffer().set_text("Context: this audio is a team meeting about a software project. Rewrite the transcript as clear meeting notes, preserving facts, decisions, and action items. Do not invent information.");
-        let prompt_pane = pane("Instructions", &prompt);
+        let prompt_pane = pane("", &prompt);
         prompt_pane.set_vexpand(false);
-        root.append(&prompt_pane);
+        let prompt_section = gtk::Expander::builder()
+            .label("Sistem Prompt (required)")
+            .expanded(false)
+            .child(&prompt_pane)
+            .build();
+        root.append(&prompt_section);
         let notice = gtk::Label::builder()
-            .label("Instructions and original text will be sent to the LLM server configured in Settings.")
+            .label("The system prompt and original text will be sent to the LLM server configured in Settings.")
             .wrap(true)
             .halign(Align::Start)
             .build();
@@ -241,6 +249,7 @@ impl RewriteView {
             result,
             renderer,
             prompt,
+            prompt_section,
             stop,
             status,
             copy,
