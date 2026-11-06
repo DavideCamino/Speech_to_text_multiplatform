@@ -1,5 +1,5 @@
 //! Widget signals and window/menu actions, with weak controller references.
-use super::{app::App, dialogs, export::ExportKind, menu, rewrite, views::buffer_text};
+use super::{app::App, dialogs, export::ExportKind, markdown_document, menu, views::buffer_text};
 use crate::transcription::Source;
 use adw::prelude::*;
 use std::rc::Rc;
@@ -201,7 +201,7 @@ impl App {
         on_click(&self.rewrite.txt, self, |app| {
             app.export(
                 "rewritten.txt",
-                rewrite::plain_text(&app.rewrite_markdown()),
+                markdown_document::plain_text(&app.rewrite_markdown()),
                 ExportKind::Rewrite,
             )
         });

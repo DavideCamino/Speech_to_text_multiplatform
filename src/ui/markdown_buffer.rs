@@ -1,26 +1,26 @@
-//! Markdown rendered into one native text buffer. Raw Markdown stays in the
-//! rewrite state; this module owns only its display and never opens URLs/files.
+//! GTK adapter for incremental Markdown display. Raw Markdown stays in rewrite
+//! state; parsing, edit planning, and viewport following have separate owners.
+use super::{
+    markdown_diff::UpdatePlan,
+    markdown_document::{Document, Style, parse_display},
+    markdown_scroll::ScrollFollow,
+};
 use adw::prelude::*;
-use gtk::{glib, pango};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use std::{cell::Cell, collections::BTreeSet, rc::Rc};
+use gtk::pango;
+use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Style {
-    Heading(u8),
-    Bold,
-    Italic,
-    Strike,
-    Code,
-    CodeBlock,
-    Quote(u8),
-    List(u8),
-    Link,
-}
+#[cfg(test)]
+use {
+    gtk::glib,
+    std::{cell::Cell, rc::Rc},
+};
+
+// Semantic styles are GTK-independent; their native presentation belongs here.
 impl Style {
     fn name(&self) -> String {
         format!("md-{self:?}")
     }
+
     fn tag(&self, buffer: &gtk::TextBuffer) -> gtk::TextTag {
         let name = self.name();
         if let Some(tag) = buffer.tag_table().lookup(&name) {
@@ -59,379 +59,88 @@ impl Style {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Span {
-    start: usize,
-    end: usize,
-    style: Style,
-}
-#[derive(Default, Debug, PartialEq, Eq)]
-struct Document {
-    text: String,
-    spans: Vec<Span>,
-    length: usize,
-}
-impl Document {
-    fn push(&mut self, text: &str) {
-        self.length += text.chars().count();
-        self.text.push_str(text);
-    }
-    fn breaks(&mut self, count: usize) {
-        if self.text.is_empty() {
-            return;
-        }
-        let existing = self.text.chars().rev().take_while(|c| *c == '\n').count();
-        for _ in existing..count {
-            self.push("\n");
-        }
-    }
-}
-
-fn parse(markdown: &str) -> Document {
-    let mut doc = Document::default();
-    let mut open = Vec::new();
-    let mut lists: Vec<Option<u64>> = Vec::new();
-    let mut quote_depth = 0_u8;
-    for event in Parser::new_ext(
-        markdown,
-        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
-    ) {
-        match event {
-            Event::Start(tag) => {
-                let style = match tag {
-                    Tag::Heading { level, .. } => {
-                        doc.breaks(2);
-                        Some(Style::Heading(level as u8))
-                    }
-                    Tag::Strong => Some(Style::Bold),
-                    Tag::Emphasis => Some(Style::Italic),
-                    Tag::Strikethrough => Some(Style::Strike),
-                    Tag::CodeBlock(_) => {
-                        doc.breaks(2);
-                        Some(Style::CodeBlock)
-                    }
-                    Tag::BlockQuote(_) => {
-                        doc.breaks(2);
-                        quote_depth = quote_depth.saturating_add(1);
-                        Some(Style::Quote(quote_depth.min(8)))
-                    }
-                    Tag::List(start) => {
-                        doc.breaks(1);
-                        lists.push(start);
-                        None
-                    }
-                    Tag::Item => {
-                        doc.breaks(1);
-                        let start = doc.length;
-                        if let Some(Some(number)) = lists.last_mut() {
-                            doc.push(&format!("{number}. "));
-                            *number = number.saturating_add(1);
-                        } else {
-                            doc.push("• ");
-                        }
-                        open.push(Some((Style::List(lists.len().min(8) as u8), start)));
-                        continue;
-                    }
-                    Tag::Link { .. } => Some(Style::Link),
-                    // Image contents become inert alt text; HTML is displayed
-                    // literally below, never interpreted as markup.
-                    _ => None,
-                };
-                open.push(style.map(|style| (style, doc.length)));
-            }
-            Event::End(end) => {
-                if let Some(Some((style, start))) = open.pop() {
-                    doc.spans.push(Span {
-                        start,
-                        end: doc.length,
-                        style,
-                    });
-                }
-                match end {
-                    TagEnd::Paragraph => doc.breaks(if lists.is_empty() { 2 } else { 1 }),
-                    TagEnd::Heading(_) | TagEnd::CodeBlock | TagEnd::HtmlBlock => doc.breaks(2),
-                    TagEnd::Item => doc.breaks(1),
-                    TagEnd::List(_) => {
-                        lists.pop();
-                        doc.breaks(if lists.is_empty() { 2 } else { 1 });
-                    }
-                    TagEnd::BlockQuote(_) => {
-                        quote_depth = quote_depth.saturating_sub(1);
-                        doc.breaks(2);
-                    }
-                    _ => {}
-                }
-            }
-            Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => doc.push(&text),
-            Event::Code(text) => {
-                let start = doc.length;
-                doc.push(&text);
-                doc.spans.push(Span {
-                    start,
-                    end: doc.length,
-                    style: Style::Code,
-                });
-            }
-            Event::SoftBreak | Event::HardBreak => doc.push("\n"),
-            Event::Rule => {
-                doc.breaks(2);
-                doc.push("────────");
-                doc.breaks(2);
-            }
-            Event::TaskListMarker(checked) => doc.push(if checked { "☑ " } else { "☐ " }),
-            _ => {}
-        }
-    }
-    // Remove only layout newlines, not meaningful spaces within text/code.
-    doc.text.truncate(doc.text.trim_end_matches('\n').len());
-    let length = doc.text.chars().count();
-    doc.length = length;
-    for span in &mut doc.spans {
-        span.end = span.end.min(length);
-    }
-    doc.spans.retain(|span| span.start < span.end);
-    doc.spans
-        .sort_by(|a, b| (&a.start, &a.end, &a.style).cmp(&(&b.start, &b.end, &b.style)));
-    doc
-}
-
-struct ScrollAnchor {
-    buffer: gtk::TextBuffer,
-    mark: gtk::TextMark,
-}
-impl Drop for ScrollAnchor {
-    fn drop(&mut self) {
-        self.buffer.delete_mark(&self.mark);
-    }
-}
-
 pub(super) struct MarkdownBuffer {
     buffer: gtk::TextBuffer,
     rendered: Document,
-    revision: Rc<Cell<u64>>,
-    scroll_tick: Option<gtk::TickCallbackId>,
+    scroll: ScrollFollow,
 }
 
-impl Drop for MarkdownBuffer {
-    fn drop(&mut self) {
-        self.cancel_scroll();
-    }
-}
 impl MarkdownBuffer {
     pub fn new(view: &gtk::TextView) -> Self {
         Self {
             buffer: view.buffer(),
             rendered: Document::default(),
-            revision: Rc::new(Cell::new(0)),
-            scroll_tick: None,
-        }
-    }
-
-    fn cancel_scroll(&mut self) {
-        if let Some(tick) = self.scroll_tick.take() {
-            tick.remove();
+            scroll: ScrollFollow::default(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.cancel_scroll();
-        self.revision.set(self.revision.get() + 1);
+        self.scroll.reset();
         self.buffer.set_text("");
         self.rendered = Document::default();
     }
 
     pub fn update(&mut self, view: &gtk::TextView, markdown: &str) {
-        let next = parse(markdown);
+        let next = parse_display(markdown);
         if next == self.rendered {
             return;
         }
-        self.cancel_scroll();
-        let old: Vec<_> = self.rendered.text.chars().collect();
-        let new: Vec<_> = next.text.chars().collect();
-        let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-        let suffix = old[prefix..]
-            .iter()
-            .rev()
-            .zip(new[prefix..].iter().rev())
-            .take_while(|(a, b)| a == b)
-            .count();
-        let old_end = old.len() - suffix;
-        let new_end = new.len() - suffix;
-        let position = |offset: i32| -> i32 {
-            let offset = offset as usize;
-            if offset <= prefix {
-                offset as i32
-            } else if offset >= old_end {
-                (new_end + offset - old_end) as i32
-            } else {
-                (prefix + (offset - prefix).min(new_end - prefix)) as i32
-            }
-        };
+        let plan = UpdatePlan::between(&self.rendered, &next);
         let selection = (
             self.buffer.iter_at_mark(&self.buffer.get_insert()).offset(),
             self.buffer
                 .iter_at_mark(&self.buffer.selection_bound())
                 .offset(),
         );
-        // Preserve a viewport anchor; do not force users back to the bottom
-        // when they scroll up to read or select earlier output.
-        let scroll = view.vadjustment().map(|adjustment| {
-            let value = adjustment.value();
-            let bottom = value + adjustment.page_size() >= adjustment.upper() - 2.0;
-            let rect = view.visible_rect();
-            let iter = if bottom {
-                self.buffer.end_iter()
-            } else {
-                view.iter_at_location(rect.x(), rect.y())
-                    .unwrap_or_else(|| self.buffer.start_iter())
-            };
-            (
-                self.buffer.create_mark(None, &iter, !bottom),
-                bottom,
-                value,
-                iter.offset() as usize,
-            )
-        });
+        let anchor = self.scroll.capture(view, &self.buffer);
         self.buffer.begin_user_action();
-        if old_end != prefix || new_end != prefix {
+        if plan.changes_text() {
             self.buffer.delete(
-                &mut self.buffer.iter_at_offset(prefix as i32),
-                &mut self.buffer.iter_at_offset(old_end as i32),
+                &mut self.buffer.iter_at_offset(plan.start as i32),
+                &mut self.buffer.iter_at_offset(plan.old_end as i32),
             );
             self.buffer.insert(
-                &mut self.buffer.iter_at_offset(prefix as i32),
-                &new[prefix..new_end].iter().collect::<String>(),
+                &mut self.buffer.iter_at_offset(plan.start as i32),
+                &plan.replacement,
             );
-        }
-        // Retag only the affected suffix. Formatting can change without a text
-        // change (e.g. a closing ** arrives), so compare spans independently.
-        let mut retag = prefix;
-        for index in 0..self.rendered.spans.len().max(next.spans.len()) {
-            let a = self.rendered.spans.get(index);
-            let b = next.spans.get(index);
-            if a != b {
-                if let (Some(a), Some(b)) = (a, b)
-                    && a.start == b.start
-                    && a.style == b.style
-                {
-                    // A growing span has unchanged formatting in its prefix.
-                    retag = retag.min(a.end.min(b.end));
-                } else {
-                    if let Some(span) = a {
-                        retag = retag.min(span.start);
-                    }
-                    if let Some(span) = b {
-                        retag = retag.min(span.start);
-                    }
-                }
-            }
         }
         let styles: BTreeSet<_> = self
             .rendered
             .spans
             .iter()
             .chain(&next.spans)
-            .map(|s| s.style.clone())
+            .map(|span| span.style.clone())
             .collect();
         for style in styles {
-            let tag = style.tag(&self.buffer);
             self.buffer.remove_tag(
-                &tag,
-                &self.buffer.iter_at_offset(retag as i32),
+                &style.tag(&self.buffer),
+                &self.buffer.iter_at_offset(plan.retag_from as i32),
                 &self.buffer.end_iter(),
             );
         }
         for span in &next.spans {
-            if span.end > retag {
+            if span.end > plan.retag_from {
                 self.buffer.apply_tag(
                     &span.style.tag(&self.buffer),
-                    &self.buffer.iter_at_offset(span.start.max(retag) as i32),
+                    &self
+                        .buffer
+                        .iter_at_offset(span.start.max(plan.retag_from) as i32),
                     &self.buffer.iter_at_offset(span.end as i32),
                 );
             }
         }
         self.buffer.select_range(
-            &self.buffer.iter_at_offset(position(selection.0)),
-            &self.buffer.iter_at_offset(position(selection.1)),
+            &self
+                .buffer
+                .iter_at_offset(plan.map_position(selection.0 as usize) as i32),
+            &self
+                .buffer
+                .iter_at_offset(plan.map_position(selection.1 as usize) as i32),
         );
         self.buffer.end_user_action();
         self.rendered = next;
-        let revision = self.revision.get() + 1;
-        self.revision.set(revision);
-        if let Some((mark, bottom, previous_value, anchor)) = scroll {
-            if !bottom && prefix >= anchor && retag >= anchor {
-                // Appending below the viewport needs no scrolling at all;
-                // retaining the adjustment also preserves partial-line pixels.
-                self.buffer.delete_mark(&mark);
-                return;
-            }
-            let anchor = ScrollAnchor {
-                buffer: self.buffer.clone(),
-                mark,
-            };
-            let latest = self.revision.clone();
-            let expected_value = Cell::new(previous_value);
-            let previous_bounds = Cell::new(view.vadjustment().map(|a| (a.upper(), a.page_size())));
-            let settled_frames = Cell::new(0);
-            let started = Cell::new(None::<std::time::Instant>);
-            self.scroll_tick = Some(view.add_tick_callback(move |view, _| {
-                let Some(adjustment) = view.vadjustment() else {
-                    return glib::ControlFlow::Break;
-                };
-                if latest.get() != revision {
-                    return glib::ControlFlow::Break;
-                }
-                let bounds = (adjustment.upper(), adjustment.page_size());
-                // A shrinking scroll range can clamp the value without user
-                // input. Growing bounds, however, must not hide a reader's
-                // upward scroll between insertion and this frame.
-                let clamped = previous_bounds
-                    .get()
-                    .is_some_and(|(upper, page)| bounds.0 - bounds.1 < upper - page - 2.0);
-                if !clamped && adjustment.value() < expected_value.get() - 2.0 {
-                    return glib::ControlFlow::Break;
-                }
-                if !view.is_mapped() || view.height() <= 0 || adjustment.page_size() <= 0.0 {
-                    return glib::ControlFlow::Continue;
-                }
-                if !bottom {
-                    view.scroll_to_mark(&anchor.mark, 0.0, true, 0.0, 0.0);
-                    return glib::ControlFlow::Break;
-                }
-                // Validate the actual end of the document, not just GTK's
-                // provisional adjustment bounds. Under Xvfb several frames can
-                // have identical bounds before the first text layout completes.
-                let start = started.get().unwrap_or_else(|| {
-                    let now = std::time::Instant::now();
-                    started.set(Some(now));
-                    now
-                });
-                let end = view.iter_location(&anchor.buffer.end_iter());
-                // Set the adjustment directly to avoid animations that lag
-                // behind rapid streamed batches and look like reader scrolling.
-                let upper = adjustment.upper();
-                let page = adjustment.page_size();
-                adjustment.set_value((upper - page).max(0.0));
-                expected_value.set(adjustment.value());
-                let visible = view.visible_rect();
-                let at_end = end.y() + end.height() <= visible.y() + visible.height() + 2
-                    && (adjustment.value() + page - upper).abs() < 2.0;
-                let unchanged = previous_bounds.replace(Some((upper, page))) == Some((upper, page));
-                settled_frames.set(if at_end && unchanged {
-                    settled_frames.get() + 1
-                } else {
-                    0
-                });
-                // Use elapsed time only as a safety bound, never a small frame
-                // count as proof that asynchronous layout has finished.
-                if settled_frames.get() >= 2 || start.elapsed() >= std::time::Duration::from_secs(2)
-                {
-                    glib::ControlFlow::Break
-                } else {
-                    glib::ControlFlow::Continue
-                }
-            }));
-        }
+        self.scroll
+            .restore(view, anchor, plan.start, plan.retag_from);
     }
 }
 
@@ -507,7 +216,7 @@ pub(super) fn test_markdown_buffer() {
         for end in markdown.char_indices().map(|(i, c)| i + c.len_utf8()) {
             let prefix = &markdown[..end];
             renderer.update(&view, prefix);
-            let expected = parse(prefix);
+            let expected = parse_display(prefix);
             assert_eq!(
                 buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
                 expected.text
@@ -535,6 +244,29 @@ pub(super) fn test_markdown_buffer() {
             }
         }
     }
+    // Keep selection direction and character-based endpoints across replacement.
+    renderer.reset();
+    renderer.update(&view, "ab12345yz");
+    buffer.select_range(&buffer.iter_at_offset(9), &buffer.iter_at_offset(3));
+    renderer.update(&view, "ab☕世yz");
+    assert_eq!(buffer.iter_at_mark(&buffer.get_insert()).offset(), 6);
+    assert_eq!(buffer.iter_at_mark(&buffer.selection_bound()).offset(), 3);
+
+    // Formatting-only changes must not delete/reinsert text or lose a selection.
+    renderer.reset();
+    renderer.update(&view, "plain");
+    buffer.select_range(&buffer.iter_at_offset(4), &buffer.iter_at_offset(1));
+    deleted.borrow_mut().clear();
+    renderer.update(&view, "**plain**");
+    assert!(deleted.borrow().is_empty());
+    let bold = buffer.tag_table().lookup(&Style::Bold.name()).unwrap();
+    assert!(buffer.start_iter().has_tag(&bold));
+    assert_eq!(buffer.iter_at_mark(&buffer.get_insert()).offset(), 4);
+    assert_eq!(buffer.iter_at_mark(&buffer.selection_bound()).offset(), 1);
+    renderer.update(&view, "plain");
+    assert!(deleted.borrow().is_empty());
+    assert!(!buffer.start_iter().has_tag(&bold));
+
     // Appending to a long result must not delete/reinsert its committed prefix.
     renderer.reset();
     let prefix = format!("# Heading\n\n{}", "x".repeat(100_000));
@@ -666,39 +398,4 @@ fn wait_for_gtk_frames(view: &gtk::TextView, count: u32) {
         }
     });
     wait_for_gtk("GTK frames", || frames.get() >= count);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn parses_basic_formatting_lists_unicode_and_inert_content() {
-        let doc = parse(
-            "# Heading\n\n**bold** *italic* ~~gone~~ `code`\n\n- one\n- two\n  - nested\n\n3. third\n4. fourth\n\n> quote\n\n```rust\nlet x = 1;\n```\n\n[link](https://example.com) ![alt](file:///secret)\n\n<script>never executed</script>",
-        );
-        assert!(doc.text.starts_with("Heading\n\nbold italic gone code"));
-        assert!(doc.text.contains("• one\n• two\n• nested"));
-        assert!(doc.text.contains("3. third\n4. fourth"));
-        assert!(doc.text.contains("link alt"));
-        assert!(doc.text.contains("<script>never executed</script>"));
-        for style in [
-            Style::Heading(1),
-            Style::Bold,
-            Style::Italic,
-            Style::Strike,
-            Style::Code,
-            Style::CodeBlock,
-            Style::List(2),
-            Style::Quote(1),
-            Style::Link,
-        ] {
-            assert!(
-                doc.spans.iter().any(|span| span.style == style),
-                "missing {style:?}"
-            );
-        }
-        let unicode = parse("**Caffè ☕ 世界**");
-        assert_eq!(unicode.text, "Caffè ☕ 世界");
-        assert_eq!(unicode.spans[0].end, unicode.text.chars().count());
-    }
 }

@@ -2,7 +2,7 @@ use super::{
     app::App,
     export::ExportKind,
     lifecycle::WindowLifecycle,
-    markdown_buffer, menu,
+    markdown_buffer, markdown_document, markdown_scroll, menu,
     model_controller::{self, ModelAvailability},
     models, preferences,
     rewrite::RewriteOperation,
@@ -42,6 +42,7 @@ fn settings_pages_and_menu_surfaces_build() {
     incremental_transcript_updates();
     markdown_buffer::test_markdown_buffer();
     markdown_buffer::test_markdown_scrolling();
+    markdown_scroll::test_scroll_lifecycle();
     text_zoom::test_markdown_zoom();
     text_zoom::test_font_zoom();
     text_zoom::test_shared_recognized_zoom();
@@ -730,6 +731,20 @@ fn rewrite_generation_states() {
     assert!(app.rewrite.prompt.is_editable());
     assert_eq!(buffer_text(&app.rewrite.prompt), saved_prompt);
     assert!(!app.rewrite.stop.is_sensitive());
+    // Display has richer block spacing, TXT uses its explicit compact policy,
+    // and Copy/Markdown snapshots must still use the authoritative raw source.
+    let raw = app.rewrite_markdown();
+    let txt = markdown_document::plain_text(&raw);
+    assert_eq!(txt, "Live\nPartial output!");
+    assert_eq!(buffer_text(&app.rewrite.result), "Live\n\nPartial output!");
+    app.rewrite.copy.emit_clicked();
+    let copied = gtk::glib::MainContext::default()
+        .block_on(app.window.clipboard().read_text_future())
+        .unwrap()
+        .unwrap();
+    assert_eq!(copied, raw);
+    app.mark_export_saved(ExportKind::Rewrite, &txt);
+    assert!(app.rewrite_state.borrow().is_dirty());
     app.mark_export_saved(ExportKind::Rewrite, &older);
     assert!(app.rewrite_state.borrow().is_dirty());
     app.mark_export_saved(ExportKind::Rewrite, &app.rewrite_markdown());

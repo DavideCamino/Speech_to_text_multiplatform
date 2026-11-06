@@ -94,26 +94,6 @@ impl State {
     }
 }
 
-pub(super) fn plain_text(markdown: &str) -> String {
-    use pulldown_cmark::{Event, Parser, TagEnd};
-    let mut text = String::new();
-    for event in Parser::new(markdown) {
-        match event {
-            Event::Text(value) | Event::Code(value) => text.push_str(&value),
-            Event::SoftBreak | Event::HardBreak | Event::Rule => text.push('\n'),
-            Event::End(
-                TagEnd::Paragraph
-                | TagEnd::Heading(_)
-                | TagEnd::Item
-                | TagEnd::CodeBlock
-                | TagEnd::BlockQuote(_),
-            ) if !text.ends_with('\n') => text.push('\n'),
-            _ => {}
-        }
-    }
-    text.trim_end().to_owned()
-}
-
 fn drain(job: &llm::Job) -> Vec<llm::Event> {
     let mut events = Vec::new();
     for _ in 0..64 {
@@ -362,7 +342,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{RewriteOperation, State, plain_text};
+    use super::{RewriteOperation, State};
     use crate::llm;
     use std::sync::{
         Arc,
@@ -432,16 +412,5 @@ mod tests {
             cancel: cancel.clone(),
         }));
         assert!(cancel.load(Ordering::Relaxed));
-    }
-    #[test]
-    fn plain_text_export() {
-        assert_eq!(
-            plain_text("# Heading\n\n**bold** and `code`"),
-            "Heading\nbold and code"
-        );
-        assert_eq!(
-            plain_text("![alt](file:///secret) [label](https://example.com)"),
-            "alt label"
-        );
     }
 }
