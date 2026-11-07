@@ -40,7 +40,7 @@ impl Default for Settings {
 }
 
 fn dirs() -> Result<ProjectDirs> {
-    ProjectDirs::from("io.github", "Davide Camino", "Speech2Text")
+    ProjectDirs::from("io.github", "", "Speech2Text")
         .context("Cannot locate the user's application directories")
 }
 
