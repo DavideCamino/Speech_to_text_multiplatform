@@ -20,6 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check packaging and locked dependency sources
         run: |
+          python3 -m unittest discover -s build-aux/packaging -p 'test_*.py' -v
           python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py'
           python3 build-aux/flatpak/check-packaging.py "$MANIFEST"
           if [ "$GITHUB_REF_TYPE" = tag ]; then

@@ -101,7 +101,8 @@ def tool(prefix: Path, name: str) -> Path:
     return path
 
 
-def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
+def validate_inputs(binary: Path, vendor: Path, bundle: Path) -> Path:
+    """Validate inputs and the deletion boundary; return the package inventory."""
     if not binary.is_file():
         raise ValueError(f"Missing release executable: {binary}")
     inventory = ROOT / "target/windows-msys2-packages.txt"
@@ -112,9 +113,18 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
     # Do not let a typo recursively delete arbitrary directories.
     if bundle.parent.resolve() != (ROOT / "dist").resolve() or bundle.name != "Speech2Text":
         raise ValueError("Bundle destination must be the repository's dist/Speech2Text directory")
+    return inventory
+
+
+def prepare_bundle(bundle: Path) -> None:
+    """Recreate the destination after validate_inputs has approved it."""
     if bundle.exists():
         shutil.rmtree(bundle)
     (bundle / "bin").mkdir(parents=True)
+
+
+def copy_runtime(prefix: Path, binary: Path, bundle: Path) -> list[Path]:
+    """Copy runtime resources and return all binaries needing import inspection."""
     executable = bundle / "bin/speech2text.exe"
     shutil.copy2(binary, executable)
     seeds = [executable]
@@ -162,12 +172,20 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
     # SDK icon caches predate our app icon; GTK can scan these portable themes.
     for cache in (bundle / "share/icons").rglob("icon-theme.cache"):
         cache.unlink()
+    return seeds
 
+
+def collect_dependencies(prefix: Path, bundle: Path, seeds: list[Path]) -> dict:
+    """Collect the DLL closure and refresh metadata for copied GIO modules."""
     report = collect_dlls(prefix, bundle, seeds, lambda path: imports(path, tool(prefix, "objdump")))
     gio_modules = bundle / "lib/gio/modules"
     if list(gio_modules.glob("*.dll")):
         subprocess.run([str(tool(prefix, "gio-querymodules")), str(gio_modules)], check=True)
+    return report
 
+
+def collect_licenses(prefix: Path, vendor: Path, bundle: Path, inventory: Path) -> None:
+    """Include dependency notices, package versions and patched native sources."""
     # Include Rust and native dependency notices. Extra SDK license notices are
     # intentional; tools themselves (Rust, Python, LLVM, MSYS2) are not shipped.
     licenses = bundle / "licenses"
@@ -193,13 +211,16 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
         "See individual license notices for terms; runtime DLLs remain replaceable.\n",
         encoding="utf-8")
     copy_tree(prefix / "share/licenses", licenses / "msys2", required=True)
-    helper = ROOT / "build-aux/flatpak/install-licenses.py"
+    helper = ROOT / "build-aux/packaging/install-licenses.py"
     spec = importlib.util.spec_from_file_location("dependency_licenses", helper)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.install(vendor, licenses / "rust")
     module.install(ROOT / "vendor", licenses / "local-rust")
 
+
+def write_metadata(bundle: Path, report: dict) -> None:
+    """Write the runtime manifest, portable launcher and user instructions."""
     with (ROOT / "Cargo.toml").open("rb") as handle:
         version = tomllib.load(handle)["package"]["version"]
     report.update({"version": version, "architecture": "x86_64", "inference_backend": "CPU + Vulkan"})
@@ -222,6 +243,9 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
         "https://github.com/DavideCamino/Speech_to_text_multiplatform/issues\n",
         encoding="utf-8")
 
+
+def create_archive(bundle: Path) -> Path:
+    """Archive the complete portable tree and checksum the finished ZIP."""
     archive = bundle.parent / "Speech2Text-windows-x86_64.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
         for path in sorted(bundle.rglob("*")):
@@ -232,6 +256,16 @@ def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
         digest = hashlib.file_digest(handle, "sha256").hexdigest()
     checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     return archive
+
+
+def assemble(prefix: Path, binary: Path, vendor: Path, bundle: Path) -> Path:
+    inventory = validate_inputs(binary, vendor, bundle)
+    prepare_bundle(bundle)
+    seeds = copy_runtime(prefix, binary, bundle)
+    report = collect_dependencies(prefix, bundle, seeds)
+    collect_licenses(prefix, vendor, bundle, inventory)
+    write_metadata(bundle, report)
+    return create_archive(bundle)
 
 
 def main() -> int:

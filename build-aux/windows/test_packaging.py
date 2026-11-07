@@ -1,8 +1,7 @@
 import hashlib
 import importlib.util
 import json
-import ntpath
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
@@ -14,10 +13,6 @@ HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("windows_package", HERE / "package.py")
 PACKAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PACKAGE)
-LICENSE_SPEC = importlib.util.spec_from_file_location(
-    "dependency_licenses", PACKAGE.ROOT / "build-aux/flatpak/install-licenses.py")
-LICENSES = importlib.util.module_from_spec(LICENSE_SPEC)
-LICENSE_SPEC.loader.exec_module(LICENSES)
 
 
 class WindowsPackagingTests(unittest.TestCase):
@@ -52,21 +47,6 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("project license is MIT", notice)
         self.assertIn("MPL-2.0", notice)
         self.assertIn("LGPL", notice)
-
-    def test_license_paths_normalize_mixed_windows_separators(self):
-        # Reproduce scandir's mixed strings from the Windows failure. Emulate
-        # Windows lexical paths on Linux, without accessing a Windows drive.
-        parent = r"D:/a/_temp/msys64/tmp/vendor\example-1.0"
-        child = parent + "/nested/COPYING"
-        with patch.object(LICENSES, "normpath", ntpath.normpath), \
-                patch.object(LICENSES, "Path", wraps=PureWindowsPath) as factory:
-            crate = LICENSES.normalized_path(parent)
-            source = LICENSES.normalized_path(child)
-            self.assertEqual(source.relative_to(crate).as_posix(), "nested/COPYING")
-            # Check that strings are normalized *before* Path construction,
-            # not merely that PureWindowsPath can parse a mixed input itself.
-            self.assertEqual(factory.call_args_list[0].args, (ntpath.normpath(parent),))
-            self.assertEqual(factory.call_args_list[1].args, (ntpath.normpath(child),))
 
     def test_parses_only_x86_64_pe_imports(self):
         output = "file format pei-x86-64\n\tDLL Name: KERNEL32.dll\n\tDLL Name: libgtk-4-1.dll\n"
@@ -122,12 +102,15 @@ class WindowsPackagingTests(unittest.TestCase):
             (root / "target/windows-msys2-packages.txt").touch()
             binary = root / "app.exe"
             binary.touch()
-            safe = root / "must-not-delete"
-            safe.mkdir()
-            with patch.object(PACKAGE, "ROOT", root):
-                with self.assertRaisesRegex(ValueError, "destination"):
-                    PACKAGE.assemble(root, binary, root / "target/windows-vendor", safe)
-            self.assertTrue(safe.is_dir())
+            for destination in [root / "Speech2Text", root / "dist/must-not-delete"]:
+                with self.subTest(destination=destination):
+                    destination.mkdir(parents=True)
+                    marker = destination / "existing.txt"
+                    marker.write_text("do not delete")
+                    with patch.object(PACKAGE, "ROOT", root):
+                        with self.assertRaisesRegex(ValueError, "destination"):
+                            PACKAGE.assemble(root, binary, root / "target/windows-vendor", destination)
+                    self.assertEqual(marker.read_text(), "do not delete")
 
     def test_full_bundle_layout_licenses_archive_and_checksum_with_mock_pe_tools(self):
         # This checks assembly, not Windows execution. Real PE/tool/GUI validation
@@ -151,8 +134,8 @@ class WindowsPackagingTests(unittest.TestCase):
             put("vendor/whisper-rs-sys/PATCH.md", "local build fixes")
             put("vendor/whisper-rs-sys/Cargo.toml", '[package]\nname="whisper-rs-sys"\nversion="0.15.0"\nlicense="Unlicense"\n')
             put("vendor/whisper-rs-sys/whisper.cpp/LICENSE", "native dependency notice")
-            helper = put("build-aux/flatpak/install-licenses.py")
-            shutil.copyfile(PACKAGE.ROOT / "build-aux/flatpak/install-licenses.py", helper)
+            helper = put("build-aux/packaging/install-licenses.py")
+            shutil.copyfile(PACKAGE.ROOT / "build-aux/packaging/install-licenses.py", helper)
             vendor = root / "target/windows-vendor"
             put("target/windows-vendor/example-1.0/Cargo.toml", '[package]\nname="example"\nversion="1.0.0"\nlicense="MIT"\n')
             put("target/windows-vendor/example-1.0/LICENSE", "dependency notice")
@@ -190,11 +173,151 @@ class WindowsPackagingTests(unittest.TestCase):
                 launcher = output.read("Speech2Text/Start-Speech2Text.cmd")
                 self.assertNotIn(b"\n", launcher.replace(b"\r\n", b""))
                 report = json.loads(output.read("Speech2Text/runtime-manifest.json"))
-                self.assertEqual(report["inference_backend"], "CPU + Vulkan")
-                self.assertEqual(report["version"], "0.1.0")
+                self.assertEqual(report, {"bundled_dlls": ["libexample.dll"],
+                                          "windows_system_dlls": ["kernel32.dll"],
+                                          "version": "0.1.0", "architecture": "x86_64",
+                                          "inference_backend": "CPU + Vulkan"})
+                self.assertEqual(json.loads(output.read("Speech2Text/licenses/rust/packages.json")), [
+                    {"name": "example", "version": "1.0.0", "license": "MIT"}])
+                self.assertEqual(output.read("Speech2Text/licenses/rust/example-1.0/LICENSE"), b"dependency notice")
+                self.assertEqual(output.read("Speech2Text/licenses/local-rust/whisper-rs-sys/whisper.cpp/LICENSE"),
+                                 b"native dependency notice")
+            with zipfile.ZipFile(root / "dist/Speech2Text/licenses/whisper-rs-sys-source.zip") as sources:
+                self.assertEqual(set(sources.namelist()), {"whisper-rs-sys/PATCH.md", "whisper-rs-sys/Cargo.toml",
+                                                          "whisper-rs-sys/whisper.cpp/LICENSE"})
+                self.assertEqual(sources.read("whisper-rs-sys/PATCH.md"), b"local build fixes")
             digest, name = archive.with_suffix(".sha256").read_text().split()
             self.assertEqual(name, archive.name)
             self.assertEqual(digest, hashlib.sha256(archive.read_bytes()).hexdigest())
+
+
+class RuntimeStageTests(unittest.TestCase):
+    """Exercise native-tool boundaries with fixtures, not real PE executables."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.prefix = self.root / "ucrt64"
+        self.bundle = self.root / "dist/Speech2Text"
+        self.binary = self.put("target/release/speech2text.exe")
+        self.put("data/icons/io.github.davidecamino.Speech2Text.svg", "<svg/>")
+        for name in ["glib-compile-schemas", "gdk-pixbuf-query-loaders", "gio-querymodules", "objdump"]:
+            self.put(f"ucrt64/bin/{name}.exe")
+        self.loader = self.put(f"ucrt64/{PACKAGE.PIXBUF.as_posix()}/libpixbufloader-svg.dll")
+        for theme in ["Adwaita", "hicolor"]:
+            self.put(f"ucrt64/share/icons/{theme}/index.theme")
+        self.put("ucrt64/share/glib-2.0/schemas/gtk.gschema.xml")
+        PACKAGE.prepare_bundle(self.bundle)
+
+    def put(self, relative, content="fixture"):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    @staticmethod
+    def compile_schemas(command, **kwargs):
+        (Path(command[-1]) / "gschemas.compiled").write_bytes(b"compiled schema")
+        return subprocess.CompletedProcess(command, 0)
+
+    def copy_runtime(self, run=None):
+        with patch.object(PACKAGE, "ROOT", self.root), \
+                patch.object(PACKAGE.subprocess, "run", side_effect=run or self.compile_schemas):
+            return PACKAGE.copy_runtime(self.prefix, self.binary, self.bundle)
+
+    def test_missing_loader_directory_fails(self):
+        shutil.rmtree(self.loader.parent)
+        with self.assertRaisesRegex(ValueError, "Missing GdkPixbuf loaders"):
+            self.copy_runtime()
+
+    def test_missing_svg_loader_fails(self):
+        self.loader.unlink()
+        self.put(f"ucrt64/{PACKAGE.PIXBUF.as_posix()}/other.dll")
+        with self.assertRaisesRegex(ValueError, "Missing SVG loader"):
+            self.copy_runtime()
+
+    def test_missing_required_themes_and_schemas_fail(self):
+        for relative in ["share/icons/Adwaita", "share/icons/hicolor", "share/glib-2.0/schemas"]:
+            with self.subTest(resource=relative):
+                resource = self.prefix / relative
+                backup = self.root / "resource-backup"
+                shutil.copytree(resource, backup)
+                shutil.rmtree(resource)
+                with self.assertRaisesRegex(ValueError, "Required runtime resources"):
+                    self.copy_runtime()
+                shutil.copytree(backup, resource)
+                shutil.rmtree(backup)
+
+    def test_schema_compiler_must_produce_output(self):
+        with self.assertRaisesRegex(ValueError, "did not produce gschemas.compiled"):
+            self.copy_runtime(lambda command, **kwargs: subprocess.CompletedProcess(command, 0))
+
+    def test_schema_compiler_failure_propagates(self):
+        def fail(command, **kwargs):
+            raise subprocess.CalledProcessError(1, command)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.copy_runtime(fail)
+
+    def test_plugins_and_helpers_seed_the_dependency_closure(self):
+        plugins = [f"{PACKAGE.PIXBUF.as_posix()}/libpixbufloader-svg.dll",
+                   "lib/gio/modules/gio-plugin.dll", "lib/gtk-4.0/nested/gtk-plugin.DLL"]
+        for relative in plugins[1:]:
+            self.put(f"ucrt64/{relative}")
+        helpers = ["gspawn-win64-helper.exe", "gspawn-win64-helper-console.exe", "dbus-daemon.exe"]
+        for name in helpers:
+            self.put(f"ucrt64/bin/{name}")
+        self.put("ucrt64/lib/gio/modules/giomodule.cache", "STALE SDK PATH")
+        self.put("ucrt64/lib/gtk-4.0/unrelated.txt", "not a DLL")
+        self.put("ucrt64/bin/plugin-only.dll")
+        seeds = self.copy_runtime()
+        expected = ["bin/speech2text.exe", "bin/gdk-pixbuf-query-loaders.exe",
+                    *plugins, *(f"bin/{name}" for name in helpers)]
+        self.assertEqual({path.relative_to(self.bundle).as_posix() for path in seeds}, set(expected))
+        self.assertFalse((self.bundle / "lib/gtk-4.0/unrelated.txt").exists())
+        self.assertFalse((self.bundle / "lib/gio/modules/giomodule.cache").exists())
+
+        def query_modules(command, **kwargs):
+            self.assertEqual(Path(command[0]), self.prefix / "bin/gio-querymodules.exe")
+            (Path(command[-1]) / "giomodule.cache").write_text("relocatable module metadata")
+            return subprocess.CompletedProcess(command, 0)
+
+        def read_imports(path, objdump):
+            self.assertEqual(objdump, self.prefix / "bin/objdump.exe")
+            return ["plugin-only.dll"] if path.name == "gtk-plugin.DLL" else ["KERNEL32.dll"]
+
+        with patch.object(PACKAGE, "imports", side_effect=read_imports), \
+                patch.object(PACKAGE.subprocess, "run", side_effect=query_modules):
+            report = PACKAGE.collect_dependencies(self.prefix, self.bundle, seeds)
+        self.assertEqual(report, {"bundled_dlls": ["plugin-only.dll"],
+                                  "windows_system_dlls": ["kernel32.dll"]})
+        self.assertTrue((self.bundle / "bin/plugin-only.dll").is_file())
+        self.assertEqual((self.bundle / "lib/gio/modules/giomodule.cache").read_text(),
+                         "relocatable module metadata")
+
+    def test_no_gio_plugins_does_not_run_querymodules(self):
+        seeds = self.copy_runtime()
+        with patch.object(PACKAGE, "imports", return_value=[]), \
+                patch.object(PACKAGE.subprocess, "run") as run:
+            self.assertEqual(PACKAGE.collect_dependencies(self.prefix, self.bundle, seeds),
+                             {"bundled_dlls": [], "windows_system_dlls": []})
+            run.assert_not_called()
+
+    def test_missing_inputs_leave_existing_bundle_untouched(self):
+        inventory = self.put("target/windows-msys2-packages.txt")
+        vendor = self.root / "target/windows-vendor"
+        manifest = self.put("target/windows-vendor/example/Cargo.toml")
+        marker = self.put("dist/Speech2Text/existing.txt", "keep this bundle")
+        for path, message in [(self.binary, "Missing release executable"),
+                              (inventory, "Record 'pacman"), (manifest, "Missing vendored Rust sources")]:
+            with self.subTest(input=path):
+                content = path.read_bytes()
+                path.unlink()
+                with patch.object(PACKAGE, "ROOT", self.root):
+                    with self.assertRaisesRegex(ValueError, message):
+                        PACKAGE.assemble(self.prefix, self.binary, vendor, self.bundle)
+                self.assertEqual(marker.read_text(), "keep this bundle")
+                path.write_bytes(content)
 
 
 if __name__ == "__main__":

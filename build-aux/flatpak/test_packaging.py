@@ -71,8 +71,8 @@ class ManifestTests(unittest.TestCase):
     def test_local_dependency_notices_are_installed(self):
         manifest = json.loads(next(HERE.glob("io.*.json")).read_text())
         commands = manifest["modules"][0]["build-commands"]
-        registry_command = "python3 build-aux/flatpak/install-licenses.py cargo/vendor /app/share/licenses/speech2text/dependencies"
-        local_command = "python3 build-aux/flatpak/install-licenses.py vendor /app/share/licenses/speech2text/local-dependencies"
+        registry_command = "python3 build-aux/packaging/install-licenses.py cargo/vendor /app/share/licenses/speech2text/dependencies"
+        local_command = "python3 build-aux/packaging/install-licenses.py vendor /app/share/licenses/speech2text/local-dependencies"
         self.assertIn(registry_command, commands)
         self.assertIn(local_command, commands)
         # Run the manifest's local-vendor installer against the real patched

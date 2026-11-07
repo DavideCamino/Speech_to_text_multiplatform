@@ -96,7 +96,9 @@ Old preferences without a backend choice default to Automatic. If a saved backen
 
 ## Flatpak: CPU + Vulkan
 
-Packaging files live in `build-aux/flatpak/` and `data/`; the Rust source layout is unchanged. This package enables **CPU and Vulkan only** (not CUDA, ROCm, or Metal). The GitHub workflow produces an **x86_64** sideload bundle. Vulkan can serve compatible AMD, Intel, and NVIDIA GPUs through the host drivers exposed by Flatpak.
+Flatpak-specific packaging files live in `build-aux/flatpak/` and `data/`; the Rust source layout is unchanged. This package enables **CPU and Vulkan only** (not CUDA, ROCm, or Metal). The GitHub workflow produces an **x86_64** sideload bundle. Vulkan can serve compatible AMD, Intel, and NVIDIA GPUs through the host drivers exposed by Flatpak.
+
+Both Flatpak and Windows use `build-aux/packaging/install-licenses.py` to collect Rust dependency notices and package metadata; native runtime packaging remains platform-specific.
 
 ### 1. Install build tools and SDKs
 
@@ -131,6 +133,7 @@ From the repository root:
 
 ```sh
 python3 build-aux/flatpak/generate-cargo-sources.py --check
+python3 -m unittest discover -s build-aux/packaging -p 'test_*.py' -v
 python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py'
 python3 build-aux/flatpak/check-packaging.py \
   build-aux/flatpak/io.github.davidecamino.Speech2Text.json
@@ -272,6 +275,7 @@ Packages are uploaded/published only after all build and startup/install checks 
 Platform-independent packaging tests can also run on Linux:
 
 ```sh
+python3 -m unittest discover -s build-aux/packaging -p 'test_*.py' -v
 python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
 ```
 
