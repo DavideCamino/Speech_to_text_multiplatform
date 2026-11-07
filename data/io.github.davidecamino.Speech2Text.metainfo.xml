@@ -9,10 +9,18 @@
     <name>Davide Camino</name>
   </developer>
   <description>
-    <p>Turn audio files and microphone recordings into text with local Whisper models. Speech recognition runs locally without uploading audio.</p>
-    <p>Copy recognized text, export plain text, or create SRT subtitles with segment timestamps. Use CPU inference or Vulkan acceleration on a compatible GPU.</p>
-    <p>Optionally rewrite transcripts using a configured llama.cpp server. Instructions and transcript text are sent to that server only when you request a rewrite, with Markdown results displayed during generation.</p>
-    <p>Choose an existing whisper.cpp model or explicitly download one in Settings. Model files are not bundled; downloading models requires an internet connection and additional disk space.</p>
+    <p>Turn audio files and microphone recordings into text with local Whisper models. Speech recognition runs on your device without uploading audio. The desktop interface is built with GTK and libadwaita.</p>
+    <ul>
+      <li>Transcribe WAV, MP3, FLAC, OGG/Vorbis, and M4A audio files.</li>
+      <li>Record from a selected microphone with live provisional text, input level and duration indicators, and separate Stop and Cancel controls.</li>
+      <li>Choose automatic language detection or a supported Whisper language, and provide optional recognition context for names and specialist vocabulary.</li>
+      <li>Edit completed transcripts, copy text, export TXT or original timed SRT subtitles, and replace or append subsequent transcriptions.</li>
+      <li>Download models with SHA-256 verification or use an existing local whisper.cpp model. Downloads and model copies support cancellation.</li>
+      <li>Use CPU inference or Vulkan acceleration on a compatible GPU in the Flatpak package.</li>
+    </ul>
+    <p>Optionally rewrite transcripts through a separately configured llama.cpp server. Instructions and transcript text, not audio, are sent to that server when you request a rewrite. Results appear during generation with native Markdown formatting and can be copied or exported as Markdown or plain text. Stopping generation preserves partial output.</p>
+    <p>Model files are not bundled. Explicit model downloads require an internet connection and additional disk space; recognition can run offline once a model is available. GPU acceleration requires compatible drivers.</p>
+    <p>Transcripts and rewrite results are not saved automatically. TXT export includes manual transcript corrections; SRT export retains the original recognized text and timestamps. Preferences and prompts are saved locally as unencrypted text, while authentication tokens are session-only.</p>
   </description>
   <launchable type="desktop-id">io.github.davidecamino.Speech2Text.desktop</launchable>
   <url type="homepage">https://github.com/DavideCamino/Speech_to_text_multiplatform</url>
@@ -20,9 +28,17 @@
   <url type="vcs-browser">https://github.com/DavideCamino/Speech_to_text_multiplatform</url>
   <content_rating type="oars-1.1"/>
   <releases>
-    <release version="0.1.0" date="2026-10-28">
+    <release version="1.0.0" date="2026-11-07">
       <description>
-        <p>Initial Linux release with local Whisper transcription, microphone recording, CPU and Vulkan inference, TXT/SRT export, and a demonstration rewrite view.</p>
+        <p>First stable release of Speech2Text.</p>
+        <ul>
+          <li>Local audio-file and microphone transcription with CPU and Vulkan inference.</li>
+          <li>Editable transcripts, replace or append workflows, TXT export, and original timed SRT subtitles.</li>
+          <li>Verified model downloads, local model selection and copying, language selection, and optional recognition context.</li>
+          <li>Streaming LLM rewriting through a configured server, with Markdown display and TXT/Markdown export.</li>
+          <li>Saved preferences, keyboard shortcuts, text zoom, and warnings before discarding unexported text.</li>
+          <li>Linux Flatpak and Windows installer and portable ZIP packaging.</li>
+        </ul>
       </description>
     </release>
   </releases>

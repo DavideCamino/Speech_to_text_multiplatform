@@ -239,7 +239,7 @@ def write_metadata(bundle: Path, report: dict) -> None:
         "Models are not bundled. Preferences and downloads use your Windows user profile.\n"
         "Licensing: project source is MIT; bundled dependencies retain their own licenses.\n"
         "See licenses/LICENSES.txt and the accompanying license texts.\n"
-        "This build is unsigned and experimental. Report errors and your Windows version:\n"
+        "This build is unsigned and the first stable release. Report errors and your Windows version:\n"
         "https://github.com/DavideCamino/Speech_to_text_multiplatform/issues\n",
         encoding="utf-8")
 
