@@ -1,4 +1,4 @@
-; Compile with ISCC /DAppVersion=0.1.0 build-aux/windows/installer.iss
+; Compile with ISCC /DAppVersion=1.0.0 build-aux/windows/installer.iss
 #ifndef AppVersion
   #error AppVersion must be supplied by the build workflow
 #endif

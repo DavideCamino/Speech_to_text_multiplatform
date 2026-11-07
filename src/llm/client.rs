@@ -135,7 +135,7 @@ impl Client {
                 output_bytes += text.len();
                 ensure!(
                     output_bytes <= 512 * 1024,
-                    "Response exceeded the 512 KiB draft limit"
+                    "Response limit"
                 );
                 emit(text).await?;
             }
