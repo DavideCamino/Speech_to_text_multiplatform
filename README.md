@@ -1,423 +1,90 @@
 # Speech2Text
 
-A local-first Rust desktop demo using **GTK 4**, **libadwaita**, and **whisper.cpp** via `whisper-rs`.
+Speech2Text is a local-first desktop application for turning audio files and microphone recordings into text. It uses Whisper for on-device recognition and offers optional transcript rewriting through a separately configured llama.cpp server.
 
-## Current features
+The interface is built with GTK 4 and libadwaita. Linux and Windows packages support CPU and Vulkan inference; models are downloaded separately. Project code is [MIT-licensed](LICENSE); dependencies retain their [own licenses](LICENSES.txt).
 
-- Transcribe a selected **WAV, MP3, FLAC, OGG/Vorbis, or M4A (AAC/ALAC)** file.
-- Microphone transcription with an input selector, background device discovery, manual Refresh, visible discovery errors, level indicator, duration, Stop, and Cancel. Unavailable saved inputs remain selected until you choose another input.
-- Finalized text uses the theme's normal foreground; revisable live text is grey.
-- Read-only transcript, clipboard copy, UTF-8 TXT, and segment-timed SRT export.
-- **Ctrl + mouse wheel** changes font size in the main transcript and rewrite view's **Sistem Prompt (required)**, **Original**, and formatted **Result** panes (up to increase, down to decrease; 8–36 pt). The main **Transcript** and rewrite **Original** panes share the same font size: zooming either updates both, even when the other view is hidden. **Sistem Prompt (required)** and **Result** each zoom independently; headings scale relative to the result's base font. Zoom is kept for the current session only. Without Ctrl, the wheel scrolls normally. Text, clipboard contents, and exports are unchanged.
-- A single **Local Whisper model** button in Settings shows the selected model's filename. It opens a library listing `.bin` models in the application's default model folder. Download multilingual Tiny, Base, Small, Medium, or Large V3 from the built-in catalog, or select a model in another folder and choose **Use Original** or **Copy to Model Folder**. Downloads verify pinned SHA-256 checksums; downloads and copies show progress and support cancellation. Copies preserve the source and never overwrite existing models.
-- **Settings → Speech to Text → Spoken language** offers English, Italian, French, Spanish, German, Auto (automatic detection), and **Custom…**. Custom opens a popup for a supported Whisper language code (for example `pt`, `ja`, or `zh`); Apply validates the code, while Cancel leaves the previous choice unchanged. Saved custom codes are restored and can be changed with **Edit…**. Language changes are disabled during active work. Transcription preserves the spoken language; translation is disabled.
-- GPU-enabled builds for Vulkan, CUDA, Metal, or **AMD ROCm (HIP/hipBLAS)**, with a runtime switch to CPU mode and a saved backend selector.
-- A three-dot header menu with **Settings**, **Keyboard Shortcuts**, and **About Speech2Text**. Settings has a **Speech to Text** page for model/audio options and an **LLM** page for a llama.cpp server connection.
-- A second view with editable rewrite instructions, a read-only original, and live native GTK Markdown results from a configured llama.cpp server. Generation can be stopped; results can be copied as Markdown or exported as plain TXT/Markdown.
-- Replace/append confirmation, cancellation that keeps completed segments, unexported-text warnings, and saved non-sensitive preferences.
+Software debeloped by **Davide Camino**.
 
-Developed by **Davide Camino**. [Source code and releases](https://github.com/DavideCamino/Speech_to_text_multiplatform).
+## Features
 
-Application ID: `io.github.davidecamino.Speech2Text`. The first release is **0.1.0** (`v0.1.0`), licensed under MIT.
+- **Audio files:** transcribe WAV, MP3, FLAC, OGG/Vorbis, and M4A (AAC/ALAC).
+- **Microphone:** choose an input, monitor recording duration and level, and see live provisional text alongside finalized text.
+- **Recognition settings:** automatic language detection, supported Whisper language codes, and optional recognition context for names or specialist vocabulary.
+- **Model library:** download multilingual Tiny, Base, Small, Medium, or Large V3 with SHA-256 verification; use or copy an existing local model. Downloads and copies support cancellation.
+- **Editable transcripts:** correct text after recognition stops, copy it, export TXT or original timed SRT subtitles, and replace or append subsequent transcriptions.
+- **Hardware acceleration:** CPU mode or a compiled GPU backend. Source builds can enable Vulkan, CUDA, Metal, or Linux ROCm.
+- **LLM rewriting:** stream results from a configured server, stop generation while keeping partial output, and copy/export Markdown or plain text.
+- **Desktop controls:** keyboard shortcuts, Ctrl + mouse-wheel text zoom, saved preferences, and warnings before discarding unexported text.
 
-## Build and run on Linux
+## Usage
 
-Requirements:
+### 1. Select a model and recognition settings
 
-- Rust **1.92+** (edition 2024; required by the current GTK Rust bindings).
-- GTK **4.12+**, libadwaita **1.5+**, their development packages, and `pkg-config`.
-- A C/C++ compiler, CMake, and libclang (for whisper.cpp and generated bindings).
-- ALSA development headers for CPAL microphone support; an operational desktop audio stack.
-- Internet access for Cargo's initial dependency fetch and any explicitly requested model download.
+Open **⋮ → Settings → Speech to Text → Local Whisper model**. Choose **Download…** for a catalog model, or **Select Local Model…** to use an existing whisper.cpp `.bin` model. External models can be used in place or copied into the application's model folder. Tiny is a useful starting point for live recognition; larger models need more memory and processing time.
 
-For example, on Ubuntu 24.04:
+Choose the spoken language, **Auto**, or **Custom…** for another supported Whisper language code. Enable hardware acceleration if your build and GPU support it, or disable it for CPU inference. **Automatic** uses Whisper's default GPU selection.
 
-```sh
-sudo apt install build-essential cmake clang libclang-dev pkg-config \
-  libgtk-4-dev libadwaita-1-dev libasound2-dev
-cargo run
-```
+![Model and recognition settings](Screenshots/settings_whisper.png)
 
-On Arch Linux the corresponding packages include `base-devel`, `cmake`, `clang`, `pkgconf`, `gtk4`, `libadwaita`, and `alsa-lib`.
+### 2. Transcribe a file or microphone
 
-Open **⋮ → Settings → Speech to Text → Local Whisper model** (the button initially says **No model selected**). Click an installed model to select it, use **Download…** to choose a catalog model, or **Select Local Model…** to browse another folder. External selections offer to copy into the displayed model folder or use the original location without copying. Model selection is saved immediately; other settings are saved when Settings closes. Base is a useful starting point; Tiny is faster for live transcription. No model is bundled with the source.
+Open an audio file, or select an **Audio input** in Settings and start recording. Use **Refresh** after connecting or disconnecting a microphone. Optionally expand **Context (optional)** and enter names or vocabulary before starting; this guides recognition rather than acting as an instruction to rewrite the result.
 
-Use a release build for meaningful performance measurements:
+Grey text is provisional and may change. **Stop** ends microphone capture and finishes buffered audio. **Cancel** discards unfinished work but keeps finalized text; model loading must finish before cancellation can complete.
 
-```sh
-cargo run --release
-```
+When a transcript already exists, choose **Replace** to start over or **Append** to preserve it and add the new recognition.
 
-### Hardware acceleration
+![Transcription view](Screenshots/transcription.png)
 
-GPU support is implemented as explicit Cargo features, because each backend needs different native tooling. A default build is CPU-only and labels the acceleration switch accordingly. Compatible backends can be compiled together (all corresponding toolkits are required); for example:
+### 3. Edit and export
 
-```sh
-cargo run --release --features rocm,vulkan
-```
+The main transcript is editable whenever transcription is stopped. **Copy**, **Save TXT**, and **Rewrite** use the current text, including your corrections.
 
-In **Settings → Speech to Text**, enable **Hardware acceleration**, then select **GPU backend**. The dropdown lists the backends compiled into that build, plus **Automatic (Whisper default)**. It is disabled when acceleration is off or work is running. The choice is saved independently of the on/off switch and applies to the next transcription job.
+**Save Subtitles** exports the original recognized text and timestamps as SRT—not your manual text edits. Appending preserves edited text, while subtitle timings continue from the original subtitle timeline.
 
-| Backend | Build/run command | Additional requirements |
-| --- | --- | --- |
-| Vulkan (Linux/Windows) | `cargo run --release --features vulkan` | Vulkan headers, loader, shader compiler (`glslc`), compatible GPU drivers; Windows generally needs the Vulkan SDK |
-| CUDA (NVIDIA) | `cargo run --release --features cuda` | Compatible NVIDIA GPU/driver and CUDA toolkit including `nvcc` |
-| Metal (macOS) | `cargo run --release --features metal` | Xcode command-line tools and supported Apple hardware |
-| ROCm (AMD, Linux) | `cargo run --release --features rocm` | ROCm-compatible AMD GPU/driver, HIP SDK (`hipcc`), hipBLAS and rocBLAS development libraries |
+Export anything you want to keep: transcripts and rewrite results are **not saved automatically**. Ctrl + mouse wheel changes text size without changing exported content; zoom lasts for the current session.
 
-For example, Ubuntu Vulkan development packages include `libvulkan-dev` and `glslc`; Arch uses `vulkan-headers`, `vulkan-icd-loader`, and `shaderc`, plus the appropriate vendor driver.
+![Transcript editing and export](Screenshots/editing.gif)
 
-#### AMD ROCm setup
+### 4. Rewrite with an LLM (optional)
 
-The `rocm` feature enables `whisper-rs/hipblas`, which compiles whisper.cpp's HIP backend. It is a separate build option from Vulkan, not an additional driver needed by Vulkan. Settings identifies it as **AMD ROCm (HIP/hipBLAS)**.
-
-Install the ROCm HIP SDK, hipBLAS, and rocBLAS for your distribution and GPU. If installed in `/opt/rocm`, make the toolchain discoverable with:
+Run a separate llama.cpp server with a chat-capable GGUF model, for example:
 
 ```sh
-export HIP_PATH=/opt/rocm
-export PATH="$HIP_PATH/bin:$PATH"
-export CMAKE_PREFIX_PATH="$HIP_PATH${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
-cargo run --release --features rocm
+llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
 ```
 
-Use `rocminfo` to check whether the runtime can see your GPU and identify its `gfx...` architecture. If automatic architecture detection fails, set `AMDGPU_TARGETS` to your GPU's actual target. For example, **only for a `gfx1103` GPU**:
+In **Settings → LLM**, enter the hostname/IP and port, optionally supply an authentication token, and select **Test Connection**. Enter a hostname, not a full URL. HTTPS requires a server or reverse proxy with a trusted certificate.
 
-```sh
-AMDGPU_TARGETS=gfx1103 cargo run --release --features rocm
-```
+![LLM settings view](Screenshots/settings_llm.png)
 
-The selected architecture must also be supported by the installed ROCm/rocBLAS libraries; merely being listed by `rocminfo` does not guarantee compatibility. Do not use an arbitrary architecture override to bypass that requirement. First builds compile native GPU kernels and can take several minutes. For a custom ROCm installation, the runtime loader may also need its `lib` directory in `LD_LIBRARY_PATH`.
+Open **Rewrite**, expand **System Prompt (required)**, enter your instructions, and start generation. The current transcript is sent as the original text. **Stop Generation** keeps partial output. **Copy Markdown** and Markdown export preserve the raw response; TXT export removes Markdown formatting.
 
-**ROCm support is Linux-only with the current bindings.** The pinned `whisper-rs-sys` version explicitly rejects HIP builds on Windows; use Vulkan there. ROCm is not available on macOS.
+The renderer supports headings, emphasis, lists, quotations, and code. Links are inert; images show alt text. No generated content automatically opens files or fetches images.
 
-In a GPU-enabled build the app requests GPU inference by default. Disable **Hardware acceleration** to force CPU mode. **Automatic** preserves Whisper's default device selection. An explicit backend selects its first detected GPU using Whisper's GPU-device ordinal; it does not silently select a different GPU backend. If the backend is not compiled in or no compatible device is detected, transcription reports an error. Driver discovery happens on the worker, not the GTK thread. The native engine can still fall back to CPU if GPU initialization fails internally; the app does not report the actual device used. There is no per-device picker within a backend yet.
+![LLM rewrite view](Screenshots/rewriting.png)
 
-Old preferences without a backend choice default to Automatic. If a saved backend is absent from a different build, Settings explains that Automatic has been selected instead.
+### Privacy and saved data
 
-## Flatpak: CPU + Vulkan
+- Whisper recognition runs locally. Audio is processed in memory, not saved by the app.
+- Explicit model downloads contact Hugging Face and its download servers.
+- LLM tests and rewrites contact the configured server; rewriting sends instructions and transcript text, **not audio**. Use loopback for a local HTTP server or HTTPS on untrusted networks.
+- Authentication tokens are session-only. Recognition context, rewrite instructions, and other preferences are saved locally as **unencrypted JSON**; do not put secrets in saved prompts.
+- Exports are written only to the location you select. See [installation and data locations](INSTALL.md#saved-data) for settings and model folders.
 
-Flatpak-specific packaging files live in `build-aux/flatpak/` and `data/`; the Rust source layout is unchanged. This package enables **CPU and Vulkan only** (not CUDA, ROCm, or Metal). The GitHub workflow produces an **x86_64** sideload bundle. Vulkan can serve compatible AMD, Intel, and NVIDIA GPUs through the host drivers exposed by Flatpak.
+## Installation
 
-Both Flatpak and Windows use `build-aux/packaging/install-licenses.py` to collect Rust dependency notices and package metadata; native runtime packaging remains platform-specific.
+- **[Install Speech2Text](INSTALL.md):** Linux Flatpak and Windows installer instructions, updates, and saved-data locations.
+- **[Build from source](BUILD_FROM_SOURCE.md):** prerequisites, CPU/GPU builds, tests, and local Flatpak/Windows packaging.
 
-### 1. Install build tools and SDKs
+## Missing features and current limitations
 
-On Ubuntu 24.04 or newer:
-
-```sh
-sudo apt install flatpak flatpak-builder python3
-```
-
-On Arch Linux:
-
-```sh
-sudo pacman -S flatpak flatpak-builder python
-```
-
-Python **3.11+** is needed for the packaging scripts. Add Flathub and install the matching SDK extensions (GNOME 50 is based on Freedesktop 25.08):
-
-```sh
-flatpak remote-add --user --if-not-exists flathub \
-  https://flathub.org/repo/flathub.flatpakrepo
-flatpak install --user flathub \
-  org.gnome.Platform//50 org.gnome.Sdk//50 \
-  org.freedesktop.Sdk.Extension.rust-stable//25.08 \
-  org.freedesktop.Sdk.Extension.llvm21//25.08
-```
-
-The SDK supplies GTK/libadwaita, CMake, Vulkan headers, and `glslc`; its extensions supply Rust and libclang. You do not need the host's Rust/LLVM/ROCm/CUDA installations for this build. Allow several GB for SDKs, downloaded sources, and build output; a first release build can take a while. The manifest sets Cargo/CMake concurrency to 16 jobs, limit the concurrency to reduce peak memory use.
-
-### 2. Check or refresh the locked Cargo sources
-
-From the repository root:
-
-```sh
-python3 build-aux/flatpak/generate-cargo-sources.py --check
-python3 -m unittest discover -s build-aux/packaging -p 'test_*.py' -v
-python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py'
-python3 build-aux/flatpak/check-packaging.py \
-  build-aux/flatpak/io.github.davidecamino.Speech2Text.json
-```
-
-Whenever `Cargo.lock` changes, regenerate and **commit** the source list:
-
-```sh
-python3 build-aux/flatpak/generate-cargo-sources.py
-```
-
-The generator uses only Python's standard library, makes no network requests, and records every crates.io dependency's archive URL and SHA-256 from `Cargo.lock`. Flatpak downloads/verifies those archives **before** building. Cargo then uses the vendored directory with `--frozen --offline`; there is no network dependency resolution inside the build sandbox. Git/private-registry dependencies are deliberately rejected until explicit sources are added for them.
-
-### 3. Compile and export
-
-Compile with:
-```sh
-flatpak-builder --user --force-clean --disable-rofiles-fuse \
-  --install-deps-from=flathub --repo=flatpak-repo \
-  flatpak-build build-aux/flatpak/io.github.davidecamino.Speech2Text.json
-```
-if it is needed a clean compilation:
-```sh
-flatpak-builder --user --force-clean --disable-cache \
-  --disable-rofiles-fuse --install-deps-from=flathub \
-  --repo=flatpak-repo flatpak-build \
-  build-aux/flatpak/io.github.davidecamino.Speech2Text.json
-```
-
-Then:
-```sh
-mkdir -p dist
-flatpak build-bundle --arch=x86_64 \
-  --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
-  flatpak-repo dist/Speech2Text-x86_64.flatpak \
-  io.github.davidecamino.Speech2Text stable
-(cd dist && sha256sum Speech2Text-x86_64.flatpak > SHA256SUMS)
-```
-
-Use an x86_64 host for the commands above. The manifest uses the local working tree, including uncommitted source changes; build from a clean checkout/tag when preparing a release. Build output, `.git`, `.private`, and local model directories are excluded from the source copy. Native code does not use `-march=native` or require AVX/AVX2, so the resulting CPU build is portable across baseline x86_64 machines; it can be slower than a locally optimized native build. Installed files include the executable, desktop launcher, icon, AppStream metadata, and project/dependency license notices.
-
-### 4. Install and test the bundle
-
-```sh
-(cd dist && sha256sum --check SHA256SUMS)
-flatpak install --user ./dist/Speech2Text-x86_64.flatpak
-flatpak run io.github.davidecamino.Speech2Text
-```
-
-Test file selection/export through the desktop portals, local model selection/download, microphone recording, CPU mode, and Vulkan mode on an actual GPU. A successful CI build does not prove all GPU/driver combinations work.
-
-Sandbox permissions are deliberately limited:
-
-- Wayland and fallback X11/IPC for the interface.
-- `dri` for GPU access, and PulseAudio for microphone/audio access through the desktop audio server.
-- Network access for explicitly requested model downloads.
-- **No blanket home/host filesystem permission**: file dialogs use portals, and private data/preferences/models live under Flatpak's per-app XDG directories.
-
-Models are not bundled. Compatible Vulkan drivers must be available through Flatpak's graphics-driver extensions; keep the host driver and Flatpak runtimes updated. NVIDIA uses Vulkan here, not CUDA.
-
-### Publish on GitHub
-
-`.github/workflows/flatpak.yml` builds on manual dispatch and `v*` tags:
-
-- **Manual run:** Actions → Flatpak bundle → Run workflow. Download the `Speech2Text-flatpak-x86_64` artifact to test the bundle/checksum.
-- **Tagged release:** update `Cargo.toml`'s version and the first AppStream `<release>` version/date for the release being published. The tag must exactly match `v<Cargo.toml version>`. The initial release uses `v0.1.0`.
-
-**Commit and push the finalized release changes, including renamed assets, before creating the tag.** A tag points to a committed snapshot, not uncommitted files in the working tree. The checks below read the working tree, so committing those checked changes is essential.
-
-```sh
-python3 build-aux/flatpak/check-packaging.py \
-  build-aux/flatpak/io.github.davidecamino.Speech2Text.json --release
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The build runs with read-only repository permissions. A separate release job attaches `Speech2Text-x86_64.flatpak` and `SHA256SUMS` to the GitHub Release. Tag builds **reject identity placeholders** and inconsistent versions instead of publishing a misleading package. Keep Actions enabled and allow the release job to use its declared `contents: write` permission.
-
-These are **unsigned sideload bundles**. GitHub Releases do not provide automatic Flatpak app updates; users download/install each new bundle. The checksum detects download corruption, not publisher identity independently of GitHub. A signed Flatpak repository or Flathub publication is a separate next step; runtime updates still come from Flathub normally.
-
-### Release identity
-
-| Field | Value |
-| --- | --- |
-| Developer | Davide Camino |
-| GitHub account | [DavideCamino](https://github.com/DavideCamino) |
-| Repository/homepage | [DavideCamino/Speech_to_text_multiplatform](https://github.com/DavideCamino/Speech_to_text_multiplatform) |
-| Issue tracker | [GitHub Issues](https://github.com/DavideCamino/Speech_to_text_multiplatform/issues) |
-| Application ID | `io.github.davidecamino.Speech2Text` |
-| AppStream developer ID | `io.github.davidecamino` |
-| Initial version/tag | `0.1.0` / `v0.1.0` |
-| License | MIT; © 2026 Davide Camino and Speech2Text contributors |
-
-The application, About window, Cargo metadata, desktop launcher, icon, AppStream metadata, Flatpak manifest, and release workflow use this identity. Generic placeholder-detection strings remain intentionally in the packaging checker to prevent accidental placeholder releases.
-
-The final application ID is different from earlier placeholder test builds, so Flatpak creates a **separate settings/model directory** for it. Existing test data is not automatically migrated; select a local model again or download one in the new installation. Changing the ID again after publication would create another application identity, so keep this ID stable.
-
-For later versions, update `Cargo.toml` and the AppStream release entries together, run the `--release` packaging check, and publish the matching version tag. The manifest also validates desktop/AppStream metadata during every build.
-
-## Windows: installer and portable ZIP (CPU + Vulkan)
-
-You can develop on Linux and let **GitHub Actions compile on Windows**. No local Windows compiler is needed; a Windows machine for downloading/testing the result is enough. The initial target is **Windows 10/11 x86_64**, not 32-bit Windows or a native ARM64 build. Actual compatibility must be confirmed on your test machine.
-
-### Build and download through GitHub Actions
-
-1. Commit and push the workflow/scripts, then start **Actions → Windows installer (Vulkan) → Run workflow**. Ordinary branch pushes and pull requests do not create installers. The normal Rust-check workflow still runs the platform-independent packaging tests.
-2. The `windows-2022` runner installs one coherent **MSYS2 UCRT64** GNU Rust/GCC/GTK stack, plus Vulkan headers, loader, and `shaderc`. No separate LunarG SDK is required. It builds with `--features vulkan`, the committed `vendor/whisper-rs-sys` fixes, baseline CPU flags, and a short `C:/s2t-target` output path.
-3. `build-aux/windows/package.py` recursively collects imported DLLs from the same prefix, runtime-loaded GTK/GIO/GdkPixbuf modules, schemas, icons, fonts/configuration, licenses, and the modified Whisper dependency's source. Unknown DLLs or MSYS runtime dependencies fail packaging. Build tools and models are not shipped.
-4. A smoke test relocates the ZIP to a path with spaces and checks window startup/SVG loading without MSYS2 on PATH. Inno Setup then creates a **per-user installer**, with Start Menu and optional desktop shortcuts. A second test silently installs it, checks the installed app, and uninstalls it.
-5. Download the **`Speech2Text-windows-x86_64-Vulkan`** artifact. It contains `Speech2Text-<version>-windows-x86_64-setup.exe`, the portable `Speech2Text-windows-x86_64.zip`, and SHA-256 checksums. Run the installer, or extract the entire portable ZIP and launch `Start-Speech2Text.cmd`. Keep all runtime directories together.
-6. For automatic publication, update `Cargo.toml`'s version and push a matching tag such as `v0.1.0`. After build/tests pass, a separate least-privilege job creates or updates the GitHub Release and attaches the packages. Only the release job has write permission.
-
-The target machine needs no Rust, MSYS2, GTK installation, or Vulkan SDK. The package includes MSYS2's Vulkan **loader**, not a GPU driver. Vulkan inference still requires a compatible GPU and current vendor driver; CPU mode remains available in preferences. Hosted runners check startup, **not GPU transcription**. Uninstall leaves models/preferences in the user's profile untouched.
-
-The initial launcher deliberately keeps a console open for diagnostics and uses GTK's software Cairo renderer. GdkPixbuf's absolute-path loader cache is regenerated under `%LOCALAPPDATA%/io.github.davidecamino.Speech2Text/cache` at launch, so moving the extracted application does not leave stale SDK paths or require writing into its installation directory. GTK's own GSettings use an in-memory backend; the app's JSON preferences and downloaded models still use the normal Windows user-profile directories, **not** the portable ZIP folder. Models are not bundled and downloads still require explicit user action.
-
-Optional checksum verification in PowerShell, from the directory containing the ZIP and checksum:
-
-```powershell
-$expected = ((Get-Content ./Speech2Text-windows-x86_64.sha256).Trim() -split '\s+')[0]
-(Get-FileHash ./Speech2Text-windows-x86_64.zip -Algorithm SHA256).Hash -eq $expected
-```
-
-The result should be `True`. This detects corruption, not publisher identity; these builds are **unsigned**, and Windows security software may warn. Do not disable security protection to force an unexpected/blocked executable to run.
-
-### Test on your Windows machine
-
-Prioritize **selected-file CPU transcription** before live recording:
-
-- Check startup, icons, Settings/About, and clipboard behavior without a developer toolchain installed.
-- Select a local whisper.cpp model, or explicitly download Tiny in Settings. Confirm that file selection and model paths work, including paths with spaces/non-ASCII characters.
-- Transcribe a short known WAV, then try MP3/FLAC/OGG/M4A; inspect text and TXT/SRT exports. FFmpeg is not required at runtime.
-- Check cancellation, reopening the app with saved preferences, and streaming rewrite/export against a local llama.cpp server.
-- Then test microphone permission/device selection, capture, and stopping. Windows privacy settings must permit desktop apps to access the microphone.
-- Report the Windows version, workflow run/commit, and console errors. `runtime-manifest.json` lists packaged DLLs; `licenses/msys2-packages.txt` records native/build-tool versions. The separate **`Speech2Text-windows-diagnostics`** artifact contains runner build information and startup logs.
-
-Packages are uploaded/published only after all build and startup/install checks pass. On failure, inspect the diagnostics artifact. These checks do not replace manual CPU/Vulkan transcription, microphone, and clean-machine testing. Code signing is not configured; unsigned installers may trigger SmartScreen warnings.
-
-Platform-independent packaging tests can also run on Linux:
-
-```sh
-python3 -m unittest discover -s build-aux/packaging -p 'test_*.py' -v
-python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
-```
-
-### macOS and validation status
-
-The backend uses in-process Symphonia decoding, whisper.cpp, platform-specific preferences, and GTK/GIO file dialogs/clipboard. Windows CPU/Vulkan release compilation and runtime assembly have been exercised locally. The GitHub-hosted installer workflow must still be validated on its first run. GPU inference and clean-machine compatibility require manual testing. macOS runtime bundling, microphone usage description, signing, and installer integration remain future work.
-
-## Recognition context
-
-At the top of the transcription window, expand **Context (optional)** to enter names, specialist terminology, or a brief topic description. For example: `Software development meeting. Rust, GTK4, libadwaita, Vulkan. Participants: Giulia and Marco.` The box starts collapsed and is empty on first launch. Gray hint text inside the empty box is visual guidance, not prompt contents.
-
-Context is captured when you start recording or transcribing a file and reused as Whisper's initial prompt for each recognition window. Blank context preserves normal recognition. Editing is disabled until the transcription job finishes, including Stop/Cancel shutdown; you can still collapse the section. Replace/Append retains the context for reuse. Its exact text is saved on normal application close and restored on the next launch; clearing it saves an empty value. It is not included directly in copied/exported text. This is local recognition context, separate from the rewrite view's **Sistem Prompt (required)**.
-
-Keep hints short and relevant: Whisper has a limited prompt-token budget and may truncate long context. Context can improve terminology/spelling but is not an instruction system or a guarantee of accuracy; misleading hints can bias recognition, especially with unclear audio. Previous provisional recognition is never automatically fed back as context.
-
-## Editing a transcript
-
-The main **Transcript** box is editable whenever transcription is stopped, including after completion or cancellation. Editing and its text cursor are disabled while a transcription job is running or shutting down. **Copy**, **Save TXT**, and **Rewrite** use the text currently in this box, including manual corrections. Manual edits count as unsaved changes; exporting the original subtitles does not mark those corrections saved.
-
-**Save Subtitles** always exports the original recognized text and timestamps, not manual corrections. Deleting or replacing text in the plain-text box does not delete subtitle cues. In the rewrite window, **Original** and **Result** remain read-only and **Sistem Prompt (required)** remains editable when generation is stopped.
-
-When starting another transcription, **Append** keeps the edited text and adds the new recognition after it; subtitle timestamps continue from the original subtitle timeline. **Replace** clears both the edited transcript and original subtitle data. Manually entered text also triggers the replace/append confirmation, even if no audio has been transcribed yet. Text is not saved automatically.
-
-## LLM rewriting (first draft)
-
-1. Start a llama.cpp server with a chat-capable GGUF model, for example:
-   ```sh
-   llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
-   # Optional authentication: add --api-key YOUR_TOKEN
-   ```
-2. Open **Settings → LLM**, enter the host/IP and port, and optionally the auth token. Use **Test Connection** to verify access and discover the loaded model. The default is `127.0.0.1:8080` over HTTP. Enter only a hostname/IP, not a URL or API path. HTTPS requires a server or reverse proxy configured with a trusted certificate.
-3. Transcribe audio and open **Rewrite**. Expand **Sistem Prompt (required)** and enter instructions, then click **Rewrite**. This section starts collapsed, with an empty text box on first launch and gray in-box example guidance that is never sent to the LLM. Its exact text is saved on normal application close and restored on the next launch, including intentionally empty values. Collapsing the section retains its contents. A blank or whitespace-only prompt blocks generation and automatically expands the section for correction. Prompt editing is disabled during generation, but expansion/collapse remains available. The prompt is sent as a system message and the original as a user message through `/v1/chat/completions` with streaming enabled.
-4. The result appears during generation in a single read-only GTK `TextView`. Markdown is parsed by `pulldown-cmark` and rendered with text tags: headings, bold/italic/strikethrough, lists (including nested/numbered/task lists), quotations, and inline/fenced code. Updates replace only the changed text region and retag the affected suffix, rather than rebuilding widgets. Text selection is continuous across paragraphs. **Stop Generation** cancels the request and preserves partial output. **Copy Markdown** and `.md` export retain the raw response; `.txt` export removes Markdown formatting.
-
-The host, port and HTTPS choice are saved; **tokens are session-only** and are never saved in preferences or logged. HTTP sends both text and tokens unencrypted: use loopback for a local server, or HTTPS on untrusted networks. `localhost` refers to the machine running the app; the Flatpak already has network permission. For a LAN server, configure its bind address/firewall and authentication deliberately.
-
-This draft uses the first model advertised by `/v1/models`; it does not manage models, preserve conversation history, or split transcripts that exceed the model context window. Connection attempts time out after 10 seconds and stalled operations after 120 seconds. Output is limited to 512 KiB. The accumulated Markdown is reparsed per displayed batch; unfinished Markdown may change text/formatting when delimiters or reference definitions arrive. Stable prefixes and selection offsets are preserved where possible. Output follows the bottom only when the reader is already there; scrolling up stops following. Tables, syntax highlighting, and image rendering are not implemented. Images display inert alt text, links display underlined labels without launching handlers, and HTML is literal text. No model output triggers automatic network or local-file loading.
-
-### Renderer and dependency licensing
-
-The application source and native Markdown renderer are MIT-licensed; `pulldown-cmark` is MIT-licensed too. The previous GPL-licensed `gtk-markdown` widget has been removed from the dependency graph. This does not change the obligations for previously distributed builds that included it.
-
-The About window and Windows installer display [`LICENSES.txt`](LICENSES.txt), distinguishing the MIT project code from dependency terms. Rust dependencies such as Symphonia retain MPL-2.0 terms, and bundled native libraries such as GTK retain their own licenses (including LGPL requirements). Packaging collects dependency notices; release maintainers must still review and fulfill applicable source-availability and replacement/relinking obligations for the exact distributed components.
-
-## Data and privacy
-
-- Audio is decoded/captured in memory, not saved by the app. Long files are processed incrementally.
-- Whisper context and the LLM system prompt are saved on normal application close as **unencrypted plain text in the local settings file**, and restored at startup. Clearing either box saves an empty value. Older settings without these fields start with empty prompts. Do not enter secrets you do not want stored locally.
-- Transcript text and rewrite results are not persisted automatically. Hint text is never saved or used as a prompt.
-- Model paths, language, microphone selection, acceleration preference, and LLM server address (never its token) are saved as JSON in the OS-specific application configuration directory.
-- Downloaded models live in the OS-specific application data directory under `models/`.
-- Explicit model downloads contact Hugging Face and its download/CDN redirects. LLM connection tests and rewrites contact only the configured server; rewrites send instructions and transcript text, never audio. LLM requests do not follow redirects or use environment proxies. Native Whisper logging hooks are silenced to avoid logging recognized words.
-- TXT/Markdown/SRT export writes only to the location selected in the file chooser. Markdown export preserves the result as-is; it does not invent Markdown formatting.
-
-## Architecture
-
-```text
-src/
-  transcript.rs          Timed segments, normalization, plain text and SRT
-  settings.rs            Platform directories and JSON preferences
-  model.rs               Model catalog, cancellable HTTPS download, SHA-256
-  audio/
-    decode.rs            Incremental Symphonia file decoding and mono mixing
-    capture.rs           CPAL input stream, bounded callback queue, level meter
-    resample.rs          Stateful windowed-sinc conversion to 16 kHz
-  transcription/
-    engine.rs            Whisper context/state and per-window recognition
-    gpu.rs               Stable backend IDs, GGML registry/device-index mapping
-    worker.rs            Job lifecycle, file chunks, live provisional/final events
-  llm/
-    client.rs            OpenAI-compatible model discovery and chat streaming
-    stream.rs            Chunk-safe SSE decoding and completion validation
-    worker.rs            Cancellable bounded network-worker events
-  ui/
-    rewrite.rs           Rewrite lifecycle, raw Markdown state, batched rendering
-    markdown_buffer.rs   Native Markdown text tags, minimal text diffs, viewport handling
-    views.rs             Transcription and rewrite view widgets
-    preferences.rs       Speech-to-text and LLM connection settings pages
-    menu.rs              Header menu, shared shortcuts, application information
-    dialogs.rs           Confirmation, file selection, asynchronous export
-    mod.rs               Controller: state, event polling, navigation, actions
-```
-
-Workers receive settings snapshots and emit typed events. GTK objects never cross thread boundaries. The UI polls bounded event queues through GLib; file decoding, inference, audio resampling, and downloads do not run on the UI thread. A separate microphone owner watches Stop/Cancel independently of inference and tears down the stream; Stop waits for callback-channel disconnection before flushing buffered audio. Audio queue overflow or device errors stop the job with an explicit error instead of silently dropping speech. Original timed segments stay independent of the rewrite result, which is why rewritten subtitles are not offered.
-
-## Tests and backend tools
-
-```sh
-cargo fmt --check
-cargo test
-cargo clippy --all-targets -- -D warnings
-
-# Explicit download to a directory you choose:
-cargo run --example download_model -- ./models tiny
-
-# Exercise the same file-transcription worker without creating a GTK window:
-cargo run --release --example transcribe -- ./models/ggml-tiny.bin ./audio.wav
-
-# GPU-enabled equivalent:
-cargo run --release --features vulkan --example transcribe -- \
-  ./models/ggml-tiny.bin ./audio.m4a --gpu
-
-# Test explicit backend selection in a combined build:
-cargo run --release --features rocm,vulkan --example transcribe -- \
-  ./models/ggml-tiny.bin ./audio.wav --backend rocm
-# Replace --backend rocm with --backend vulkan to exercise the other backend.
-```
-
-The transcription example prints plain text to stdout and SRT to stderr. The normal app does not print transcripts.
-
-LLM mock-server tests cover auth, loaded-model discovery, live streaming before completion, cancellation, truncated/malformed responses, HTTP errors, and unavailable servers. They use loopback sockets, not an external server or model.
-
-Automated tests cover SRT formatting/Unicode, segment normalization, resampling across packet boundaries, incremental stereo WAV decoding, invalid input, worker model errors, pre-cancelled downloads, compiled GPU feature detection, backend device-index mapping, preference migration/round-tripping, and GTK settings/menu/selector behavior. They do not require a model, network access, display, or microphone, but native build dependencies are still required.
-
-### Validation performed in this environment
-
-- LLM rewrite draft: `cargo test --locked` passed **43 tests**, with one pre-existing model-dependent test ignored. This includes loopback mock-server streaming/cancellation/auth tests and GTK connection controls, live rendering, busy-state, partial-output, and reset checks. Formatting and Clippy checks passed; pre-existing vendored Whisper warnings remain. Flatpak and Windows packaging unit tests and AppStream validation passed. A real llama.cpp model server and newly built release bundles have not been exercised for this feature.
-
-- `cargo test --locked`: **13 tests passed**, including compiled GPU feature detection and a GTK settings/menu surface test (the GTK test is skipped when no display is available).
-- `AMDGPU_TARGETS=gfx1103 cargo check --locked --features rocm`: passed with the installed ROCm toolkit.
-- `AMDGPU_TARGETS=gfx1103 cargo test --locked --features rocm,vulkan`: **13 tests passed** in a combined-backend build.
-- Transcription smoke tests with Tiny, generated speech, and explicit `--backend rocm` / `--backend vulkan` both succeeded in that same combined build and produced text/SRT. The app does not report the actual device used internally.
-- `cargo clippy --all-targets -- -D warnings`: passed.
-- GTK desktop launch smoke test: no GTK errors; ALSA device enumeration emitted host-specific warnings.
-- Tiny model downloaded and verified through the actual application downloader.
-- Actual CPU transcription and SRT generation succeeded on generated speech in **all five requested audio formats**. FFmpeg/espeak were used only to generate test inputs, not by the application.
-- Vulkan and ROCm selection were exercised on this Linux host; CUDA and Metal runtime selection have not been tested here.
-- Flatpak packaging: 6 Python tests, desktop/AppStream validation, and Flatpak Builder manifest expansion passed. All 284 generated crate archives were verified from the local Cargo cache and successfully resolved using the offline vendor configuration; dependency notice installation was also exercised.
-- The CPU+Vulkan Flatpak was built and exported successfully under `io.github.davidecamino.Speech2Text` for version `0.1.0`. `dist/Speech2Text-x86_64.flatpak` was generated and its `SHA256SUMS` check passed.
-- A short `flatpak-builder --run` sandbox launch succeeded. This development launch emitted host accessibility-bus and ALSA device-enumeration warnings; installed-bundle file/microphone/GPU integration should still be tested before publication.
-- The new bundle has not been installed automatically, and the GitHub release workflow has not been executed. No release tag or GitHub publication was created.
-- Windows packaging: **7 platform-independent tests passed**, covering license paths, x86_64 PE parsing, recursive DLL collection, missing/MSYS dependency rejection, safe output handling, runtime/source/license collection, ZIP creation, and checksums. A fresh CPU+Vulkan release build using MSYS2 Vulkan packages passed locally, as did 12 Rust tests (one GTK test filtered out), relocated-ZIP startup, Inno Setup compilation, silent installation, installed-window startup, and uninstallation. Startup emitted a non-fatal missing-session-D-Bus warning. The GitHub workflow, clean-machine compatibility, GPU inference, and microphone behavior still require validation.
-
-## Demo limitations / follow-up work
-
-- Whisper is chunk-based, not a native streaming recognizer. Live inference is scheduled roughly every three seconds after the previous pass; actual latency depends on hardware/model size. File and live transcription use windows of at most 28 seconds, retain four seconds of overlapping audio, and keep a two-second revisable text tail. Stop flushes only the actual final window; provisional words can change.
-- Overlapping hypotheses are reconciled using word-level timestamps and time-constrained text alignment, then grouped into readable subtitle cues. If recognition disagrees entirely, a word-level timestamp seam is used instead. Timestamps remain approximate; alignment cannot guarantee perfect text at every boundary, particularly for languages without whitespace. VAD and professional subtitle alignment remain follow-up work.
-- Silence gating is deliberately conservative; noisy silence can still cause Whisper hallucinations.
-- Cancel uses Whisper's native abort callback to interrupt inference at backend computation checkpoints, discards unfinished text/audio, and preserves finalized text. It cannot interrupt model loading (or an individual backend operation); cancellation is checked before and after loading. Stop signals microphone teardown independently of inference, then finishes all buffered audio. Downloads are cancellation-polled even while waiting for network data.
-- Real-time capture requires inference to keep up. Its bounded callback queue may overflow on slow hardware; a clear error preserves completed text. Select Tiny or use a supported GPU build.
-- Device names are discovered on a background thread at startup. Use Settings → Audio input → Refresh after connecting/disconnecting a microphone; automatic hot-plug monitoring is not implemented. Some unusual input sample formats are not supported.
-- File progress is updated at inference-window boundaries; it can remain unchanged while a model loads or the first window runs.
-- No model download resume, transcript history, automatic audio saving, translation, speaker diarization, LLM model management, Flathub publication/automatic app updates, or macOS installer integration yet. Windows installers are unsigned; automatic updates are not implemented.
-
-The agreed requirements remain in [`question.md`](question.md).
+- No transcript autosave/history, audio saving, translation, speaker diarization, or batch-file queue.
+- No model-download resume or automatic microphone hot-plug monitoring.
+- Live recognition is chunk-based, not instantaneous. Slow inference can overflow the capture queue; use a smaller model or supported GPU. Silence can still produce hallucinated text.
+- Subtitle timings are approximate. Dedicated voice-activity detection, professional alignment, and subtitle editing are not implemented.
+- No individual GPU picker or reporting of the device actually used internally; the native engine may fall back to CPU.
+- LLM rewriting uses the first model advertised by the server. There is no model management, conversation history, or splitting of transcripts that exceed its context window. Output is limited to 512 KiB.
+- Markdown tables, syntax highlighting, and image rendering are not implemented.
+- No automatic application updates, Flathub publication, or macOS installer. Windows installers are unsigned. GPU, microphone, and clean-machine compatibility require platform-specific testing.
