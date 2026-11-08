@@ -43,7 +43,7 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_installer_displays_combined_licensing_notice(self):
         installer = (HERE / "installer.iss").read_text()
         self.assertIn(r"LicenseFile=..\..\LICENSES.txt", installer)
-        notice = (PACKAGE.ROOT / "LICENSES.txt").read_text()
+        notice = (PACKAGE.ROOT / "LICENSES.txt").read_text(encoding="utf-8")
         self.assertIn("project license is MIT", notice)
         self.assertIn("MPL-2.0", notice)
         self.assertIn("LGPL", notice)
@@ -128,7 +128,7 @@ class WindowsPackagingTests(unittest.TestCase):
             put("Cargo.toml", '[package]\nname="speech2text"\nversion="0.1.0"\n')
             put("Cargo.lock")
             put("LICENSE", "MIT fixture")
-            put("LICENSES.txt", (PACKAGE.ROOT / "LICENSES.txt").read_text())
+            put("LICENSES.txt", (PACKAGE.ROOT / "LICENSES.txt").read_text(encoding="utf-8"))
             put("data/icons/io.github.davidecamino.Speech2Text.svg", "<svg/>")
             put("build-aux/windows/Start-Speech2Text.cmd", (HERE / "Start-Speech2Text.cmd").read_text())
             put("vendor/whisper-rs-sys/PATCH.md", "local build fixes")
