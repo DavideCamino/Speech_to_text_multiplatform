@@ -85,7 +85,7 @@ class LicenseInstallerTests(unittest.TestCase):
     def test_empty_vendor_still_writes_package_inventory(self):
         LICENSES.install(self.vendor, self.destination)
         self.assertEqual((self.destination / "packages.json").read_text(), "[]\n")
-        self.assertEqual(list(self.destination.iterdir()), [self.destination / "packages.json"])
+        self.assertEqual([path.name for path in self.destination.iterdir()], ["packages.json"])
 
     def test_path_normalization_does_not_resolve_symlinks(self):
         path = self.vendor / "example-1.0/nested/../LICENSE"
