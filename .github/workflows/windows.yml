@@ -31,7 +31,7 @@ jobs:
       GGML_FMA: 'OFF'
       GGML_F16C: 'OFF'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install coherent UCRT64 build and runtime dependencies
         uses: msys2/setup-msys2@v2
         with:
@@ -101,7 +101,7 @@ jobs:
         shell: pwsh
         run: ./build-aux/windows/test-installer.ps1
       - name: Upload Windows packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Speech2Text-windows-x86_64-Vulkan
           path: |
@@ -112,7 +112,7 @@ jobs:
           retention-days: 14
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Speech2Text-windows-diagnostics
           path: |
@@ -130,7 +130,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: Speech2Text-windows-x86_64-Vulkan
           path: packages

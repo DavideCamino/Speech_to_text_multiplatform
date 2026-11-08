@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check packaging and locked dependency sources
         run: |
           python3 -m unittest discover -s build-aux/packaging -p 'test_*.py' -v
@@ -55,7 +55,7 @@ jobs:
             --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
             flatpak-repo dist/Speech2Text-x86_64.flatpak "$APP_ID" stable
           (cd dist && sha256sum Speech2Text-x86_64.flatpak > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Speech2Text-flatpak-x86_64
           path: |
@@ -71,7 +71,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: Speech2Text-flatpak-x86_64
           path: dist
