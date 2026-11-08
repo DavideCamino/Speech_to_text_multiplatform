@@ -133,10 +133,7 @@ impl Client {
             };
             for text in deltas {
                 output_bytes += text.len();
-                ensure!(
-                    output_bytes <= 512 * 1024,
-                    "Response limit"
-                );
+                ensure!(output_bytes <= 512 * 1024, "Response limit");
                 emit(text).await?;
             }
             if decoder.done {
