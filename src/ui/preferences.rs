@@ -352,14 +352,15 @@ impl Preferences {
         config.add(&device_row);
         let stt_apply = gtk::Button::with_label("Apply");
         stt_apply.add_css_class("suggested-action");
-        stt_apply.set_valign(Align::Center);
-        let apply_row = adw::ActionRow::builder()
-            .title("Apply recognition settings")
-            .subtitle("Save your selections and close Settings.")
+        stt_apply.set_halign(Align::End);
+        stt_apply.set_valign(Align::End);
+        let stt_footer = adw::PreferencesGroup::builder()
+            .valign(Align::End)
+            .vexpand(true)
             .build();
-        apply_row.add_suffix(&stt_apply);
-        config.add(&apply_row);
+        stt_footer.add(&stt_apply);
         stt.add(&config);
+        stt.add(&stt_footer);
         window.add(&stt);
         let llm = adw::PreferencesPage::builder()
             .title("LLM")
@@ -399,7 +400,7 @@ impl Preferences {
         initial_models.extend(settings.llm_options.model.as_deref());
         let llm_model = adw::ComboRow::builder()
             .title("Model")
-            .subtitle("Refresh to list server models, then Apply to load your selection.")
+            .subtitle("Refresh to list models. Apply closes Settings and loads your selection; wait for Model ready before rewriting.")
             .model(&gtk::StringList::new(&initial_models))
             .selected(u32::from(settings.llm_options.model.is_some()))
             .use_markup(false)
@@ -431,14 +432,15 @@ impl Preferences {
         connection.add(&llm_reasoning);
         let llm_apply = gtk::Button::with_label("Apply");
         llm_apply.add_css_class("suggested-action");
-        llm_apply.set_valign(Align::Center);
-        let apply_row = adw::ActionRow::builder()
-            .title("Apply LLM settings")
-            .subtitle("Close Settings and load the selected model.")
+        llm_apply.set_halign(Align::End);
+        llm_apply.set_valign(Align::End);
+        let llm_footer = adw::PreferencesGroup::builder()
+            .valign(Align::End)
+            .vexpand(true)
             .build();
-        apply_row.add_suffix(&llm_apply);
-        connection.add(&apply_row);
+        llm_footer.add(&llm_apply);
         llm.add(&connection);
+        llm.add(&llm_footer);
         window.add(&llm);
         let preferences = Self {
             llm_host,

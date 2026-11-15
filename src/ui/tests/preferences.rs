@@ -21,6 +21,17 @@ pub(super) fn recognition_apply_closes_and_saves() {
     app.connect();
     app.refresh();
     assert_eq!(app.preferences.window.default_height(), 900);
+    for button in [&app.preferences.stt_apply, &app.preferences.llm_apply] {
+        assert_eq!(button.halign(), gtk::Align::End);
+        assert_eq!(button.valign(), gtk::Align::End);
+    }
+    assert!(
+        app.preferences
+            .llm_model
+            .subtitle()
+            .unwrap()
+            .contains("loads your selection")
+    );
     assert!(app.preferences.stt_apply.is_sensitive());
     app.preferences.language.dropdown.set_selected(1);
     app.preferences.window.set_visible(true);
