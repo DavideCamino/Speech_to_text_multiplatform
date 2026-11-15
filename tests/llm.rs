@@ -119,6 +119,7 @@ fn response_is_delivered_before_generation_finishes() {
     let mut text = first;
     loop {
         match job.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Event::Models(_) | Event::Status(_) => {}
             Event::Text(delta) => text.push_str(&delta),
             Event::Finished(result) => {
                 result.unwrap();
@@ -195,6 +196,204 @@ fn malformed_and_truncated_streams_fail() {
         );
         server.join().unwrap();
     }
+}
+
+#[test]
+fn configured_discovery_lists_unloaded_models_without_loading() {
+    let (connection, server) = server(|listener| {
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(request(&mut socket).0.starts_with("GET /models "));
+        response(
+            &mut socket,
+            "200 OK",
+            r#"{"data":[{"id":"first","status":{"value":"unloaded"}},{"id":"second","status":{"value":"loaded"}}]}"#,
+        );
+    });
+    let job = llm::start_configured(connection, String::new(), None, Default::default());
+    let Event::Models(models) = job.events.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("Expected model list");
+    };
+    assert_eq!(models.len(), 2);
+    assert!(models[0].needs_load);
+    assert!(!models[1].needs_load);
+    assert!(finish(&job).is_ok());
+    server.join().unwrap();
+}
+
+#[test]
+fn apply_loads_selected_model_before_rewrite_and_sends_reasoning() {
+    for reasoning in llm::Reasoning::ALL {
+        let (connection, server) = server(move |listener| {
+            let (mut socket, _) = listener.accept().unwrap();
+            assert!(request(&mut socket).0.starts_with("GET /models "));
+            response(
+                &mut socket,
+                "200 OK",
+                r#"{"data":[{"id":"first"},{"id":"chosen","status":{"value":"unloaded"}}]}"#,
+            );
+            let (mut socket, _) = listener.accept().unwrap();
+            let (headers, body) = request(&mut socket);
+            assert!(headers.starts_with("POST /models/load "));
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["model"], "chosen");
+            response(&mut socket, "200 OK", r#"{"success":true}"#);
+            // Apply waits until loaded; Rewrite independently verifies readiness.
+            for status in ["loading", "loaded", "loaded"] {
+                let (mut socket, _) = listener.accept().unwrap();
+                assert!(request(&mut socket).0.starts_with("GET /models "));
+                response(
+                    &mut socket,
+                    "200 OK",
+                    &format!(r#"{{"data":[{{"id":"chosen","status":{{"value":"{status}"}}}}]}}"#),
+                );
+            }
+            let (mut socket, _) = listener.accept().unwrap();
+            let (headers, body) = request(&mut socket);
+            assert!(headers.starts_with("POST /v1/chat/completions "));
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["model"], "chosen");
+            assert_eq!(
+                body.get("reasoning_effort").and_then(|v| v.as_str()),
+                reasoning.parameter()
+            );
+            response(
+                &mut socket,
+                "200 OK",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Result\"}}]}\n\ndata: [DONE]\n\n",
+            );
+        });
+        let options = llm::Options {
+            model: Some("chosen".into()),
+            reasoning,
+        };
+        assert!(
+            finish(&llm::start_loading(
+                connection.clone(),
+                String::new(),
+                options.clone()
+            ))
+            .is_ok()
+        );
+        let job = llm::start_configured(
+            connection,
+            String::new(),
+            Some(("prompt".into(), "text".into())),
+            options,
+        );
+        assert!(finish(&job).is_ok());
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn configured_discovery_falls_back_for_single_model_servers() {
+    let (connection, server) = server(|listener| {
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(request(&mut socket).0.starts_with("GET /models "));
+        response(&mut socket, "404 Not Found", "");
+        models(&listener);
+    });
+    let job = llm::start_configured(connection, String::new(), None, Default::default());
+    assert!(finish(&job).is_ok());
+    server.join().unwrap();
+}
+
+#[test]
+fn configured_rewrite_rejects_missing_model_and_load_failures() {
+    for available in [false, true] {
+        let (connection, server) = server(move |listener| {
+            let (mut socket, _) = listener.accept().unwrap();
+            request(&mut socket);
+            response(
+                &mut socket,
+                "200 OK",
+                if available {
+                    r#"{"data":[{"id":"chosen","status":{"value":"unloaded"}}]}"#
+                } else {
+                    r#"{"data":[{"id":"other"}]}"#
+                },
+            );
+            if available {
+                let (mut socket, _) = listener.accept().unwrap();
+                assert!(request(&mut socket).0.starts_with("POST /models/load "));
+                response(&mut socket, "200 OK", r#"{"success":false}"#);
+                let (mut socket, _) = listener.accept().unwrap();
+                request(&mut socket);
+                response(
+                    &mut socket,
+                    "200 OK",
+                    r#"{"data":[{"id":"chosen","status":{"value":"unloaded"}}]}"#,
+                );
+            }
+        });
+        let job = llm::start_loading(
+            connection,
+            String::new(),
+            llm::Options {
+                model: Some("chosen".into()),
+                ..Default::default()
+            },
+        );
+        let error = finish(&job).unwrap_err();
+        assert!(
+            error.contains(if available {
+                "could not load"
+            } else {
+                "unavailable"
+            }),
+            "{error}"
+        );
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn apply_waits_for_existing_load_without_loading_twice() {
+    let (connection, server) = server(|listener| {
+        for status in ["loading", "loading", "loaded"] {
+            let (mut socket, _) = listener.accept().unwrap();
+            assert!(request(&mut socket).0.starts_with("GET /models "));
+            response(
+                &mut socket,
+                "200 OK",
+                &format!(r#"{{"data":[{{"id":"chosen","status":{{"value":"{status}"}}}}]}}"#),
+            );
+        }
+    });
+    let job = llm::start_loading(
+        connection,
+        String::new(),
+        llm::Options {
+            model: Some("chosen".into()),
+            ..Default::default()
+        },
+    );
+    assert!(finish(&job).unwrap().contains("Model ready"));
+    server.join().unwrap();
+}
+
+#[test]
+fn rewrite_does_not_load_unready_models() {
+    let (connection, server) = server(|listener| {
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(request(&mut socket).0.starts_with("GET /models "));
+        response(
+            &mut socket,
+            "200 OK",
+            r#"{"data":[{"id":"chosen","status":{"value":"unloaded"}}]}"#,
+        );
+    });
+    let job = llm::start_configured(
+        connection,
+        String::new(),
+        Some(("prompt".into(), "text".into())),
+        llm::Options {
+            model: Some("chosen".into()),
+            ..Default::default()
+        },
+    );
+    assert!(finish(&job).unwrap_err().contains("Apply"));
+    server.join().unwrap();
 }
 
 #[test]

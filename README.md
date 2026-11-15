@@ -55,7 +55,17 @@ Run a separate llama.cpp server with a chat-capable GGUF model, for example:
 llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
 ```
 
-In **Settings → LLM**, enter the hostname/IP and port, optionally supply an authentication token, and select **Test Connection**. Enter a hostname, not a full URL. HTTPS requires a server or reverse proxy with a trusted certificate.
+For a server offering multiple models without automatic loading, you can instead run:
+
+```sh
+llama serve --no-models-autoload -ngl 20 --models-dir ~/Documents/dev/AI
+```
+
+In **Settings → LLM**, enter the hostname/IP and the port printed by your server, optionally supply an authentication token, and select **Refresh Models** (or **Test Connection**). Choose a **Model** and **Reasoning level** from the dropdowns, then click **Apply**. Settings closes and the selected model loads in the background. Wait for **Model ready** before clicking Rewrite. Model discovery does not load models, and Rewrite no longer initiates model loading. The app does not launch the server, unload other models, or change its GPU-layer settings.
+
+Reasoning choices are **Server default**, **Off**, **Low**, **Medium**, and **High**. Server default sends no override; other choices use the server's `reasoning_effort` parameter. Support depends on the model's chat template and server version: unsupported levels may be ignored or rejected. Model and reasoning selections are saved locally. Refresh again after changing servers or adding/removing models; unavailable saved selections must be reselected.
+
+Enter a hostname, not a full URL. HTTPS requires a server or reverse proxy with a trusted certificate.
 
 ![LLM settings view](Screenshots/settings_llm.png)
 
@@ -85,6 +95,6 @@ The renderer supports headings, emphasis, lists, quotations, and code. Links are
 - Live recognition is chunk-based, not instantaneous. Slow inference can overflow the capture queue; use a smaller model or supported GPU. Silence can still produce hallucinated text.
 - Subtitle timings are approximate. Dedicated voice-activity detection, professional alignment, and subtitle editing are not implemented.
 - No individual GPU picker or reporting of the device actually used internally; the native engine may fall back to CPU.
-- LLM rewriting uses the first model advertised by the server. There is no model management, conversation history, or splitting of transcripts that exceed its context window. Output is limited to 512 KiB.
+- LLM models are managed by the external server; the app only lists, selects, and loads them. There is no conversation history or splitting of transcripts that exceed the model's context window. Output is limited to 512 KiB.
 - Markdown tables, syntax highlighting, and image rendering are not implemented.
 - No automatic application updates, Flathub publication, or macOS installer. Windows installers are unsigned. GPU, microphone, and clean-machine compatibility require platform-specific testing.

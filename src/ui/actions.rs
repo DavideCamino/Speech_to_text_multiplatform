@@ -167,6 +167,18 @@ impl App {
 
     fn connect_rewrite_actions(self: &Rc<Self>) {
         on_click(&self.preferences.llm_test, self, |app| app.test_llm());
+        on_click(&self.preferences.llm_refresh, self, |app| app.test_llm());
+        on_click(&self.preferences.llm_apply, self, |app| app.apply_llm());
+        for row in [&self.preferences.llm_model, &self.preferences.llm_reasoning] {
+            let weak = Rc::downgrade(self);
+            row.connect_selected_notify(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.settings.borrow_mut().llm_options = app.llm_options();
+                    app.persist();
+                    app.refresh();
+                }
+            });
+        }
         on_click(&self.rewrite.stop, self, |app| app.request_rewrite_stop());
         on_click(&self.rewrite.back, self, |app| {
             app.stack.set_visible_child_name("main")

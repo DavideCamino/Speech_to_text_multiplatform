@@ -21,7 +21,8 @@ fn settings_pages_and_menu_surfaces_build() {
         return;
     }
     adw::init().expect("libadwaita initialization");
-    // Preserve the existing execution order while moving checks by feature.
+    // Check LLM controls before frame-timing-sensitive rendering checks.
+    rewrite::rewrite_generation_states();
     transcription::incremental_transcript_updates();
     markdown_buffer::test_markdown_buffer();
     markdown_buffer::test_markdown_scrolling();
@@ -38,7 +39,6 @@ fn settings_pages_and_menu_surfaces_build() {
     preferences::prompt_placeholders_and_restore();
     models::model_library_window(&parent);
     models::replacement_confirmation();
-    rewrite::rewrite_generation_states();
     transcription::editable_transcript();
     transcription::transcript_document_states();
     transcription::transcription_session_controls();

@@ -68,6 +68,20 @@ pub(super) fn rewrite_generation_states() {
     assert!(app.rewrite_state.borrow().operation.is_testing());
     assert!(!test_cancel.load(Ordering::Relaxed));
     tested
+        .send(llm::Event::Models(vec![
+            llm::Model {
+                id: "first".into(),
+                needs_load: true,
+                loading: false,
+            },
+            llm::Model {
+                id: "chosen".into(),
+                needs_load: true,
+                loading: false,
+            },
+        ]))
+        .unwrap();
+    tested
         .send(llm::Event::Finished(Ok("Connected".into())))
         .unwrap();
     app.poll_rewrite();
@@ -76,6 +90,21 @@ pub(super) fn rewrite_generation_states() {
     assert_eq!(
         app.preferences.llm_status.subtitle().as_deref(),
         Some("Connected")
+    );
+
+    assert!(app.llm_options().model.is_none());
+    app.preferences.llm_model.set_selected(2);
+    app.preferences.llm_reasoning.set_selected(3);
+    assert_eq!(app.llm_options().model.as_deref(), Some("chosen"));
+    assert_eq!(app.llm_options().reasoning, llm::Reasoning::Medium);
+    assert_eq!(
+        app.settings.borrow().llm_options.model.as_deref(),
+        Some("chosen")
+    );
+    app.persist_controls();
+    assert_eq!(
+        app.settings.borrow().llm_options.reasoning,
+        llm::Reasoning::Medium
     );
 
     let (tx, events) = mpsc::sync_channel(8);
@@ -97,6 +126,9 @@ pub(super) fn rewrite_generation_states() {
     assert!(!app.rewrite.back.is_sensitive());
     assert!(app.rewrite.stop.is_sensitive());
     assert!(!app.preferences.llm_token.is_sensitive());
+    assert!(!app.preferences.llm_model.is_sensitive());
+    assert!(!app.preferences.llm_reasoning.is_sensitive());
+    assert!(!app.preferences.llm_refresh.is_sensitive());
     app.test_llm();
     assert!(app.rewrite_state.borrow().operation.is_generating());
     tx.send(llm::Event::Text("# Live\n\n**Partial** output".into()))
@@ -154,6 +186,25 @@ pub(super) fn rewrite_generation_states() {
     assert!(app.rewrite_markdown().is_empty());
     assert!(buffer_text(&app.rewrite.result).is_empty());
     assert!(!app.rewrite.copy.is_sensitive());
+    // Applying uses a separate loading operation and keeps Rewrite disabled.
+    let (loaded, events) = mpsc::sync_channel(2);
+    app.rewrite_state.borrow_mut().operation = RewriteOperation::LoadingModel(llm::Job {
+        events,
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    app.refresh();
+    assert!(app.busy());
+    assert!(!app.rewrite.run.is_sensitive());
+    assert!(!app.preferences.llm_apply.is_sensitive());
+    assert!(!app.preferences.llm_model.is_sensitive());
+    loaded
+        .send(llm::Event::Finished(Ok("Model ready: chosen".into())))
+        .unwrap();
+    app.poll_rewrite();
+    assert!(!app.busy());
+    assert!(app.rewrite.run.is_sensitive());
+    assert_eq!(app.main.status.text(), "Model ready: chosen");
+    assert_eq!(app.rewrite.status.text(), "Model ready: chosen");
     app.window.destroy();
 }
 

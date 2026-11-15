@@ -11,6 +11,7 @@ use std::{
 #[serde(default)]
 pub struct Settings {
     pub llm: crate::llm::Connection,
+    pub llm_options: crate::llm::Options,
     /// Saved locally as plain text on normal application close.
     pub whisper_context: String,
     /// Saved locally as plain text; empty still requires input before rewriting.
@@ -28,6 +29,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             llm: Default::default(),
+            llm_options: Default::default(),
             whisper_context: String::new(),
             llm_system_prompt: String::new(),
             model: None,
@@ -162,6 +164,25 @@ impl SaveWorker {
 mod tests {
     use super::*;
     use crate::transcription::GpuBackend;
+
+    #[test]
+    fn llm_selection_defaults_and_round_trips() {
+        let old: Settings =
+            serde_json::from_str(r#"{"llm":{"host":"localhost","port":8080}}"#).unwrap();
+        assert!(old.llm_options.model.is_none());
+        assert_eq!(old.llm_options.reasoning, crate::llm::Reasoning::Default);
+        let settings = Settings {
+            llm_options: crate::llm::Options {
+                model: Some("chosen-model".into()),
+                reasoning: crate::llm::Reasoning::High,
+            },
+            ..Default::default()
+        };
+        let decoded: Settings =
+            serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert_eq!(decoded.llm_options.model.as_deref(), Some("chosen-model"));
+        assert_eq!(decoded.llm_options.reasoning, crate::llm::Reasoning::High);
+    }
 
     #[test]
     fn background_saves_are_ordered_and_ignore_stale_results() {

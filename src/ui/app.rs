@@ -111,6 +111,7 @@ impl App {
             || self.model_state.borrow().operation.is_busy()
             || self.session.borrow().is_running()
             || self.rewrite_state.borrow().operation.is_generating()
+            || self.rewrite_state.borrow().operation.is_loading()
     }
 
     pub(super) fn poll(self: &Rc<Self>) {

@@ -43,6 +43,7 @@ impl App {
                         .copied()
                 });
             settings.device = self.preferences.selected_device();
+            settings.llm_options = self.llm_options();
             if let Ok(connection) = self.llm_connection() {
                 settings.llm = connection;
             }

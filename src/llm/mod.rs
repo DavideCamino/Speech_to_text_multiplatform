@@ -2,7 +2,50 @@
 mod client;
 mod stream;
 mod worker;
-pub use worker::{Event, Job, start};
+pub use worker::{Event, Job, start, start_configured, start_loading};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Model {
+    pub id: String,
+    pub needs_load: bool,
+    pub loading: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reasoning {
+    #[default]
+    Default,
+    Off,
+    Low,
+    Medium,
+    High,
+}
+impl Reasoning {
+    pub const ALL: [Self; 5] = [
+        Self::Default,
+        Self::Off,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+    ];
+    pub fn parameter(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::Off => Some("none"),
+            Self::Low => Some("low"),
+            Self::Medium => Some("medium"),
+            Self::High => Some("high"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Options {
+    pub model: Option<String>,
+    pub reasoning: Reasoning,
+}
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};

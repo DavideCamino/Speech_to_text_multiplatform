@@ -220,6 +220,10 @@ pub struct Preferences {
     pub llm_token: adw::PasswordEntryRow,
     pub llm_test: gtk::Button,
     pub llm_status: adw::ActionRow,
+    pub llm_model: adw::ComboRow,
+    pub llm_reasoning: adw::ComboRow,
+    pub llm_refresh: gtk::Button,
+    pub llm_apply: gtk::Button,
     pub model_label: gtk::Label,
     pub select_model: gtk::Button,
     pub gpu: gtk::Switch,
@@ -379,11 +383,51 @@ impl Preferences {
             .use_markup(false)
             .build();
         llm_status.add_suffix(&llm_test);
+        let llm_refresh = gtk::Button::with_label("Refresh Models");
+        llm_refresh.set_valign(Align::Center);
+        let mut initial_models = vec!["Select a model…"];
+        initial_models.extend(settings.llm_options.model.as_deref());
+        let llm_model = adw::ComboRow::builder()
+            .title("Model")
+            .subtitle("Refresh to list server models, then Apply to load your selection.")
+            .model(&gtk::StringList::new(&initial_models))
+            .selected(u32::from(settings.llm_options.model.is_some()))
+            .use_markup(false)
+            .build();
+        llm_model.add_suffix(&llm_refresh);
+        let llm_reasoning = adw::ComboRow::builder()
+            .title("Reasoning level")
+            .subtitle("Support depends on the model and server; default leaves it unchanged.")
+            .model(&gtk::StringList::new(&[
+                "Server default",
+                "Off",
+                "Low",
+                "Medium",
+                "High",
+            ]))
+            .selected(
+                crate::llm::Reasoning::ALL
+                    .iter()
+                    .position(|r| *r == settings.llm_options.reasoning)
+                    .unwrap_or(0) as u32,
+            )
+            .build();
         connection.add(&llm_host);
         connection.add(&llm_port);
         connection.add(&llm_https);
         connection.add(&llm_token);
         connection.add(&llm_status);
+        connection.add(&llm_model);
+        connection.add(&llm_reasoning);
+        let llm_apply = gtk::Button::with_label("Apply");
+        llm_apply.add_css_class("suggested-action");
+        llm_apply.set_valign(Align::Center);
+        let apply_row = adw::ActionRow::builder()
+            .title("Apply LLM settings")
+            .subtitle("Close Settings and load the selected model.")
+            .build();
+        apply_row.add_suffix(&llm_apply);
+        connection.add(&apply_row);
         llm.add(&connection);
         window.add(&llm);
         let preferences = Self {
@@ -393,6 +437,10 @@ impl Preferences {
             llm_token,
             llm_test,
             llm_status,
+            llm_model,
+            llm_reasoning,
+            llm_refresh,
+            llm_apply,
             window,
             model_label,
             select_model,

@@ -12,13 +12,14 @@ pub(super) enum RewriteOperation {
     #[default]
     Idle,
     TestingConnection(llm::Job),
+    LoadingModel(llm::Job),
     Generating(llm::Job),
 }
 
 impl RewriteOperation {
     fn connection_job(&self) -> Option<&llm::Job> {
         match self {
-            Self::TestingConnection(job) => Some(job),
+            Self::TestingConnection(job) | Self::LoadingModel(job) => Some(job),
             _ => None,
         }
     }
@@ -36,6 +37,10 @@ impl RewriteOperation {
 
     pub(super) fn is_testing(&self) -> bool {
         self.connection_job().is_some()
+    }
+
+    pub(super) fn is_loading(&self) -> bool {
+        matches!(self, Self::LoadingModel(_))
     }
 
     fn is_idle(&self) -> bool {
@@ -177,6 +182,18 @@ impl App {
             .llm_token
             .set_sensitive(connection_editable);
         self.preferences.llm_test.set_sensitive(connection_editable);
+        self.preferences
+            .llm_refresh
+            .set_sensitive(connection_editable);
+        self.preferences
+            .llm_model
+            .set_sensitive(connection_editable);
+        self.preferences
+            .llm_reasoning
+            .set_sensitive(connection_editable);
+        self.preferences
+            .llm_apply
+            .set_sensitive(connection_editable && self.llm_options().model.is_some());
         self.rewrite.run.set_sensitive(!busy && !testing);
         self.rewrite.prompt.set_editable(!generating);
         self.rewrite.back.set_sensitive(!generating);
@@ -205,6 +222,56 @@ impl App {
         connection.base_url()?;
         Ok(connection)
     }
+    pub(super) fn llm_options(&self) -> llm::Options {
+        llm::Options {
+            model: self
+                .preferences
+                .llm_model
+                .selected_item()
+                .and_downcast::<gtk::StringObject>()
+                .filter(|_| self.preferences.llm_model.selected() != 0)
+                .map(|item| item.string().to_string()),
+            reasoning: llm::Reasoning::ALL
+                .get(self.preferences.llm_reasoning.selected() as usize)
+                .copied()
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(super) fn apply_llm(&self) {
+        if self.busy() || !self.rewrite_state.borrow().operation.is_idle() {
+            return;
+        }
+        let options = self.llm_options();
+        if options.model.is_none() {
+            self.preferences
+                .llm_status
+                .set_subtitle("Select a model first.");
+            return;
+        }
+        let connection = match self.llm_connection() {
+            Ok(connection) => connection,
+            Err(error) => {
+                self.preferences.llm_status.set_subtitle(&error.to_string());
+                return;
+            }
+        };
+        self.persist_controls();
+        self.rewrite_state.borrow_mut().operation =
+            RewriteOperation::LoadingModel(llm::start_loading(
+                connection,
+                self.preferences.llm_token.text().to_string(),
+                options,
+            ));
+        self.preferences
+            .llm_status
+            .set_subtitle("Loading selected model…");
+        self.rewrite.status.set_text("Loading selected model…");
+        self.main.status.set_text("Loading LLM model…");
+        self.preferences.window.close();
+        self.refresh();
+    }
+
     pub(super) fn test_llm(&self) {
         if !self.rewrite_state.borrow().operation.is_idle() {
             return;
@@ -215,10 +282,11 @@ impl App {
                 self.persist();
                 self.preferences.llm_status.set_subtitle("Connecting…");
                 self.rewrite_state.borrow_mut().operation =
-                    RewriteOperation::TestingConnection(llm::start(
+                    RewriteOperation::TestingConnection(llm::start_configured(
                         connection,
                         self.preferences.llm_token.text().to_string(),
                         None,
+                        self.llm_options(),
                     ));
                 self.refresh();
             }
@@ -252,15 +320,24 @@ impl App {
                 return;
             }
         };
+        let options = self.llm_options();
+        if options.model.is_none() {
+            self.rewrite
+                .status
+                .set_text("Refresh and select an LLM model in Settings first.");
+            return;
+        }
         self.settings.borrow_mut().llm = connection.clone();
+        self.settings.borrow_mut().llm_options = options.clone();
         self.persist();
         {
             let mut state = self.rewrite_state.borrow_mut();
             state.reset_result();
-            state.operation = RewriteOperation::Generating(llm::start(
+            state.operation = RewriteOperation::Generating(llm::start_configured(
                 connection,
                 self.preferences.llm_token.text().to_string(),
                 Some((prompt, text)),
+                options,
             ));
         }
         self.rewrite.renderer.borrow_mut().reset();
@@ -285,8 +362,32 @@ impl App {
             .unwrap_or_default();
         let mut controls_changed = !test_events.is_empty();
         for event in test_events {
+            if let llm::Event::Models(models) = &event {
+                let selected = self.llm_options().model;
+                let mut names = vec!["Select a model…"];
+                names.extend(models.iter().map(|m| m.id.as_str()));
+                self.preferences
+                    .llm_model
+                    .set_model(Some(&gtk::StringList::new(&names)));
+                self.preferences.llm_model.set_selected(
+                    selected
+                        .as_ref()
+                        .and_then(|id| models.iter().position(|m| &m.id == id))
+                        .map(|i| i as u32 + 1)
+                        .unwrap_or(0),
+                );
+            }
             if let llm::Event::Finished(result) = event {
+                let loading = self.rewrite_state.borrow().operation.is_loading();
                 self.rewrite_state.borrow_mut().operation.finish();
+                if loading {
+                    let status = match &result {
+                        Ok(message) => message.clone(),
+                        Err(error) => format!("Model loading failed: {error}"),
+                    };
+                    self.rewrite.status.set_text(&status);
+                    self.main.status.set_text(&status);
+                }
                 self.preferences
                     .llm_status
                     .set_subtitle(&result.unwrap_or_else(|e| format!("Connection failed: {e}")));
@@ -303,6 +404,8 @@ impl App {
         let mut changed = false;
         for event in events {
             match event {
+                llm::Event::Models(_) => {}
+                llm::Event::Status(status) => self.rewrite.status.set_text(&status),
                 llm::Event::Text(text) => {
                     self.rewrite_state.borrow_mut().append_text(&text);
                     changed = true;
