@@ -21,7 +21,8 @@ fn settings_pages_and_menu_surfaces_build() {
         return;
     }
     adw::init().expect("libadwaita initialization");
-    // Check LLM controls before frame-timing-sensitive rendering checks.
+    // Check settings controls before frame-timing-sensitive rendering checks.
+    preferences::recognition_apply_closes_and_saves();
     rewrite::rewrite_generation_states();
     transcription::incremental_transcript_updates();
     markdown_buffer::test_markdown_buffer();

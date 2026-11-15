@@ -94,6 +94,12 @@ impl App {
     }
 
     fn connect_preferences_actions(self: &Rc<Self>) {
+        on_click(&self.preferences.stt_apply, self, |app| {
+            if !app.busy() {
+                app.persist_controls();
+                app.preferences.window.close();
+            }
+        });
         on_click(&self.preferences.device_refresh, self, |app| {
             app.refresh_devices()
         });

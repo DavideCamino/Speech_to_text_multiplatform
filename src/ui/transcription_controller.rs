@@ -260,6 +260,7 @@ impl App {
 
     pub(super) fn refresh_recognition_controls(&self) {
         let busy = self.busy();
+        self.preferences.stt_apply.set_sensitive(!busy);
         self.preferences
             .gpu
             .set_sensitive(!busy && transcription::gpu_available_in_build());

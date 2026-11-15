@@ -224,6 +224,7 @@ pub struct Preferences {
     pub llm_reasoning: adw::ComboRow,
     pub llm_refresh: gtk::Button,
     pub llm_apply: gtk::Button,
+    pub stt_apply: gtk::Button,
     pub model_label: gtk::Label,
     pub select_model: gtk::Button,
     pub gpu: gtk::Switch,
@@ -247,7 +248,7 @@ impl Preferences {
             .hide_on_close(true)
             .destroy_with_parent(true)
             .default_width(760)
-            .default_height(580)
+            .default_height(900)
             .search_enabled(false)
             .build();
         let stt = adw::PreferencesPage::builder()
@@ -349,6 +350,15 @@ impl Preferences {
         device_row.add_suffix(&device);
         device_row.add_suffix(&device_refresh);
         config.add(&device_row);
+        let stt_apply = gtk::Button::with_label("Apply");
+        stt_apply.add_css_class("suggested-action");
+        stt_apply.set_valign(Align::Center);
+        let apply_row = adw::ActionRow::builder()
+            .title("Apply recognition settings")
+            .subtitle("Save your selections and close Settings.")
+            .build();
+        apply_row.add_suffix(&stt_apply);
+        config.add(&apply_row);
         stt.add(&config);
         window.add(&stt);
         let llm = adw::PreferencesPage::builder()
@@ -441,6 +451,7 @@ impl Preferences {
             llm_reasoning,
             llm_refresh,
             llm_apply,
+            stt_apply,
             window,
             model_label,
             select_model,

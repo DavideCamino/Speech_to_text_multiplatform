@@ -16,6 +16,30 @@ use std::sync::{
     mpsc,
 };
 
+pub(super) fn recognition_apply_closes_and_saves() {
+    let app = test_app();
+    app.connect();
+    app.refresh();
+    assert_eq!(app.preferences.window.default_height(), 900);
+    assert!(app.preferences.stt_apply.is_sensitive());
+    app.preferences.language.dropdown.set_selected(1);
+    app.preferences.window.set_visible(true);
+    app.preferences.stt_apply.emit_clicked();
+    assert!(!app.preferences.window.is_visible());
+    assert_eq!(app.settings.borrow().language.as_deref(), Some("it"));
+
+    let (_tx, events) = mpsc::sync_channel(1);
+    app.rewrite_state.borrow_mut().operation =
+        crate::ui::rewrite::RewriteOperation::LoadingModel(crate::llm::Job {
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+    app.refresh();
+    assert!(!app.preferences.stt_apply.is_sensitive());
+    app.discard_active_work();
+    app.window.destroy();
+}
+
 pub(super) fn language_selection(parent: &adw::ApplicationWindow) {
     fn popup() -> (adw::MessageDialog, gtk::Entry) {
         let dialog = gtk::Window::list_toplevels()
