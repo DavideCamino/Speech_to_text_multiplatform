@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Save-on-close recovery:** closing with unsaved content or active work offers Cancel, Close Without Saving, and Autosave & Close.
+- **Temporary recovery snapshots:** atomically save edited transcripts, original subtitle timings, rewrite source/instructions/output, recognition context, and unsaved flags to `recovery.json` in the app's data folder. Audio and authentication tokens are excluded.
+- **Next-launch restoration:** restore saved content without restarting recording or generation, retain unsaved flags, and delete the recovery file only after restoration succeeds.
+- **Recovery error handling:** failed autosaves keep the app open with retry/discard options; unreadable recovery files are preserved. Files are versioned and limited to 64 MiB.
+- Tests for recovery serialization, atomic replacement, close choices, edited-text/subtitle restoration, partial rewrites, file deletion, and failure handling.
 - **LLM model selection:** choose a server model from a dropdown in Settings → LLM instead of automatically using the first advertised model.
 - **Refresh Models:** discover available models, including unloaded models on llama.cpp router servers started with `--no-models-autoload`.
 - **Reasoning level selection:** choose Server default, Off, Low, Medium, or High. Support depends on the model and server; Server default sends no override.

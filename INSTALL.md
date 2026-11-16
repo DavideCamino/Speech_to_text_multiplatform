@@ -91,7 +91,15 @@ Default locations:
 | Linux native build | `~/.config/speech2text/settings.json` | `~/.local/share/speech2text/models/` |
 | Windows | `%APPDATA%\Speech2Text\config\settings.json` | `%APPDATA%\Speech2Text\data\models\` |
 
-Native Linux paths respect `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Models selected with **Use Original** stay at their original location. Exports go to your selected destination; transcripts and rewrite results are not automatically saved.
+Native Linux paths respect `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Models selected with **Use Original** stay at their original location. Exports go to your selected destination.
+
+Choosing **Autosave & Close** stores `recovery.json` in the data folder (alongside the `models` directory):
+
+- Linux Flatpak: `~/.var/app/io.github.davidecamino.Speech2Text/data/speech2text/recovery.json`
+- Linux native build: `~/.local/share/speech2text/recovery.json`
+- Windows: `%APPDATA%\Speech2Text\data\recovery.json`
+
+This temporary file contains unencrypted transcript/rewrite text, prompts, original subtitles, and unsaved-state information—not audio or authentication tokens. The next launch restores it and deletes it after successful restoration. Failed recovery leaves the file intact. This is not periodic autosaving or crash recovery.
 
 Older Windows builds used `%APPDATA%\Davide Camino\Speech2Text\`. There is no automatic migration: with the app closed, copy the old `config` and `data` folders into `%APPDATA%\Speech2Text\` if needed, backing up any existing files first. Reselect the model afterward if its saved path points to the old folder.
 

@@ -137,7 +137,17 @@ pub(super) fn failed_autosave_keeps_content() {
     let mut app = test_app();
     std::rc::Rc::get_mut(&mut app).unwrap().recovery_path = Some(blocked.join("recovery.json"));
     app.connect();
-    app.main.transcript.buffer().set_text("Must not be lost");
+    app.document.set_provisional("Must not be lost".into());
+    app.document.render();
+    let (_tx, events) = mpsc::sync_channel(1);
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::File,
+        job: Job {
+            events,
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        },
+    };
     app.window.present();
     app.window.close();
     close_dialog().response("autosave");
@@ -158,6 +168,39 @@ pub(super) fn failed_autosave_keeps_content() {
         app.poll_preferences_save();
         app.lifecycle.get() == WindowLifecycle::ReadyToClose
     });
+}
+
+pub(super) fn discard_after_preferences_failure_removes_snapshot() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("recovery.json");
+    let mut app = test_app();
+    std::rc::Rc::get_mut(&mut app).unwrap().recovery_path = Some(path.clone());
+    app.connect();
+    app.main.transcript.buffer().set_text("Temporary draft");
+    *app.settings_writer.borrow_mut() =
+        settings::SaveWorker::with_save(|_| anyhow::bail!("preferences failure"));
+    app.autosave_and_close();
+    wait_for_background("preferences failure after autosave", || {
+        app.poll_recovery();
+        app.poll_preferences_save();
+        app.lifecycle.get() == WindowLifecycle::Open
+    });
+    assert!(path.exists());
+    assert!(app.recovery_owned.get());
+    let failure = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .find(|dialog| dialog.heading().as_deref() == Some("Could not save preferences"))
+        .unwrap();
+    failure.close();
+    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(|_| Ok(()));
+    app.close_without_saving();
+    wait_for_background("discard recovery before closing", || {
+        app.poll_recovery();
+        app.poll_preferences_save();
+        app.lifecycle.get() == WindowLifecycle::ReadyToClose
+    });
+    assert!(!path.exists());
 }
 
 pub(super) fn lifecycle_job_ownership() {

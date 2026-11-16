@@ -43,7 +43,9 @@ The main transcript is editable whenever transcription is stopped. **Copy**, **S
 
 **Save Subtitles** exports the original recognized text and timestamps as SRT—not your manual text edits. Appending preserves edited text, while subtitle timings continue from the original subtitle timeline.
 
-Export anything you want to keep: transcripts and rewrite results are **not saved automatically**. Ctrl + mouse wheel changes text size without changing exported content; zoom lasts for the current session.
+Export anything you want to keep permanently. When closing with unexported text or active work, choose **Cancel**, **Close Without Saving**, or **Autosave & Close**. Autosave & Close writes a temporary recovery snapshot in the app's data folder, then exits. On the next launch, the transcript (including manual edits and original subtitle timings), rewrite source/instructions, and partial rewrite result are restored; unexported content remains marked unsaved. The recovery file is deleted only after successful restoration. Recording and generation never resume automatically.
+
+If autosaving fails, the app stays open and offers retry or closing without saving. Unreadable recovery files are preserved and reported. This is explicit save-on-close recovery, **not periodic autosaving or crash recovery**. Ctrl + mouse wheel changes text size without changing exported content; zoom lasts for the current session.
 
 ![Transcript editing and export](Screenshots/editing.gif)
 
@@ -81,7 +83,8 @@ The renderer supports headings, emphasis, lists, quotations, and code. Links are
 - Explicit model downloads contact Hugging Face and its download servers.
 - LLM tests and rewrites contact the configured server; rewriting sends instructions and transcript text, **not audio**. Use loopback for a local HTTP server or HTTPS on untrusted networks.
 - Authentication tokens are session-only. Recognition context, rewrite instructions, and other preferences are saved locally as **unencrypted JSON**; do not put secrets in saved prompts.
-- Exports are written only to the location you select. See [installation and data locations](INSTALL.md#saved-data) for settings and model folders.
+- **Autosave & Close** explicitly stores transcript text, original subtitles, rewrite source/instructions/output, and recognition context as **unencrypted JSON** in `recovery.json` in the app's data folder. Audio and authentication tokens are not included. Recovery files are limited to 64 MiB.
+- Exports are written only to the location you select. See [installation and data locations](INSTALL.md#saved-data) for settings, models, and the recovery file.
 
 ## Installation
 
@@ -90,7 +93,7 @@ The renderer supports headings, emphasis, lists, quotations, and code. Links are
 
 ## Missing features and current limitations
 
-- No transcript autosave/history, audio saving, translation, speaker diarization, or batch-file queue.
+- No periodic autosaving, crash recovery, transcript history, audio saving, translation, speaker diarization, or batch-file queue. Save-on-close recovery requires explicitly choosing Autosave & Close.
 - No model-download resume or automatic microphone hot-plug monitoring.
 - Live recognition is chunk-based, not instantaneous. Slow inference can overflow the capture queue; use a smaller model or supported GPU. Silence can still produce hallucinated text.
 - Subtitle timings are approximate. Dedicated voice-activity detection, professional alignment, and subtitle editing are not implemented.

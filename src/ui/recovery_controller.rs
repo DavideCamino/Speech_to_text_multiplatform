@@ -101,6 +101,9 @@ impl App {
         let snapshot = self.recovery_snapshot();
         self.lifecycle.set(WindowLifecycle::SavingRecovery);
         self.discard_active_work();
+        // A failed save returns to an idle editor. Keep displayed provisional
+        // text as an unsaved draft instead of leaving an orphaned live suffix.
+        self.document.restore(&snapshot.transcript);
         self.main
             .status
             .set_text("Autosaving unsaved content before closing…");

@@ -69,7 +69,8 @@ impl Settings {
 
     fn save_in(&self, directory: &Path) -> Result<()> {
         // Serialize before touching the filesystem. User prompts are stored as
-        // plain text; transcript/results, audio, and auth tokens are not saved.
+        // plain text; transcripts/results, audio, and auth tokens are not saved
+        // in preferences. Explicit session recovery uses a separate file.
         let contents = serde_json::to_vec_pretty(self)?;
         std::fs::create_dir_all(directory).context("Cannot create preferences directory")?;
         // Stage on the same filesystem so persist can atomically replace the

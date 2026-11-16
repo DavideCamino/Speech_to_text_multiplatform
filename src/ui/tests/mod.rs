@@ -24,6 +24,7 @@ fn settings_pages_and_menu_surfaces_build() {
     // Check settings controls before frame-timing-sensitive rendering checks.
     lifecycle::autosave_and_recovery();
     lifecycle::failed_autosave_keeps_content();
+    lifecycle::discard_after_preferences_failure_removes_snapshot();
     lifecycle::lifecycle_job_ownership();
     lifecycle::final_save_ordering();
     lifecycle::failed_save_retry();
