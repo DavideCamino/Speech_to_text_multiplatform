@@ -5,7 +5,11 @@ use adw::prelude::*;
 use std::{rc::Rc, sync::mpsc};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Action { Save, Consume, Discard }
+enum Action {
+    Save,
+    Consume,
+    Discard,
+}
 
 pub(super) struct RecoveryTask {
     action: Action,
@@ -67,7 +71,9 @@ impl App {
     }
 
     pub(super) fn close_without_saving(&self) {
-        if self.lifecycle.get() != WindowLifecycle::Open { return; }
+        if self.lifecycle.get() != WindowLifecycle::Open {
+            return;
+        }
         if self.recovery_owned.get() {
             self.discard_active_work();
             self.delete_recovery(Action::Discard);
@@ -83,10 +89,7 @@ impl App {
             let path = path.ok_or_else(|| "Cannot locate the recovery directory".to_owned())?;
             recovery::remove(&path).map_err(|error| format!("{error:#}"))
         });
-        *self.recovery_task.borrow_mut() = Some(RecoveryTask {
-            action,
-            events,
-        });
+        *self.recovery_task.borrow_mut() = Some(RecoveryTask { action, events });
         self.refresh();
     }
 
@@ -140,7 +143,11 @@ impl App {
             }
             Ok(()) => {
                 self.recovery_owned.set(false);
-                if action == Action::Discard { self.begin_close(); } else { self.refresh(); }
+                if action == Action::Discard {
+                    self.begin_close();
+                } else {
+                    self.refresh();
+                }
             }
             Err(error) if action == Action::Save => {
                 self.main

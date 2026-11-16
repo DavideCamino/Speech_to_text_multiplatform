@@ -141,7 +141,7 @@ impl App {
                     if let Some(app) = weak.upgrade() {
                         app.close_confirmation.set(false);
                         match response.as_str() {
-                            "close" => app.begin_close(),
+                            "close" => app.close_without_saving(),
                             "autosave" => app.autosave_and_close(),
                             _ => {}
                         }
@@ -149,7 +149,7 @@ impl App {
                 });
                 gtk::glib::Propagation::Stop
             } else {
-                app.begin_close();
+                app.close_without_saving();
                 gtk::glib::Propagation::Stop
             }
         });

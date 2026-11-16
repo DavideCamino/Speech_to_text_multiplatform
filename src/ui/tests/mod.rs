@@ -22,6 +22,11 @@ fn settings_pages_and_menu_surfaces_build() {
     }
     adw::init().expect("libadwaita initialization");
     // Check settings controls before frame-timing-sensitive rendering checks.
+    lifecycle::autosave_and_recovery();
+    lifecycle::failed_autosave_keeps_content();
+    lifecycle::lifecycle_job_ownership();
+    lifecycle::final_save_ordering();
+    lifecycle::failed_save_retry();
     preferences::recognition_apply_closes_and_saves();
     rewrite::rewrite_generation_states();
     transcription::incremental_transcript_updates();
@@ -43,11 +48,8 @@ fn settings_pages_and_menu_surfaces_build() {
     transcription::editable_transcript();
     transcription::transcript_document_states();
     transcription::transcription_session_controls();
-    lifecycle::lifecycle_job_ownership();
     model_controller::tests::operation_controls();
     models::model_availability_states();
-    lifecycle::final_save_ordering();
-    lifecycle::failed_save_retry();
     // Additional deterministic regression cases; no native audio/network work.
     models::replaced_scan_discards_stale_results();
     devices::discovery_disconnect_and_retry();
