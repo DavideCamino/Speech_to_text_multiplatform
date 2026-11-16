@@ -46,8 +46,12 @@ fn dirs() -> Result<ProjectDirs> {
         .context("Cannot locate the user's application directories")
 }
 
+pub fn data_dir() -> Result<PathBuf> {
+    Ok(dirs()?.data_dir().to_owned())
+}
+
 pub fn model_dir() -> Result<PathBuf> {
-    Ok(dirs()?.data_dir().join("models"))
+    Ok(data_dir()?.join("models"))
 }
 
 impl Settings {

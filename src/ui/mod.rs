@@ -14,6 +14,7 @@ mod menu;
 mod model_controller;
 mod models;
 mod preferences;
+mod recovery_controller;
 mod rewrite;
 mod task;
 mod text_zoom;
@@ -55,32 +56,48 @@ pub fn build(application: &adw::Application) {
         )
         .build();
     loading.present();
-    let events = background(|| Settings::load().map_err(|error| format!("{error:#}")));
+    let events = background(|| {
+        let settings = Settings::load().map_err(|error| format!("{error:#}"));
+        let recovered = settings::data_dir()
+            .and_then(|directory| {
+                crate::recovery::load(&directory.join(crate::recovery::FILE_NAME))
+            })
+            .map_err(|error| format!("{error:#}"));
+        (settings, recovered)
+    });
     let application = application.clone();
     gtk::glib::timeout_add_local(STARTUP_POLL_INTERVAL, move || {
         if !loading.is_visible() {
             return gtk::glib::ControlFlow::Break;
         }
-        let result = match events.try_recv() {
+        let (result, recovered) = match events.try_recv() {
             Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return gtk::glib::ControlFlow::Continue,
             Err(mpsc::TryRecvError::Disconnected) => {
-                Err("Preferences worker stopped unexpectedly".into())
+                (Err("Startup worker stopped unexpectedly".into()), Ok(None))
             }
         };
         let (settings, error) = match result {
             Ok(settings) => (settings, None),
             Err(error) => (Settings::default(), Some(error)),
         };
-        build_loaded(&application, settings, error);
+        build_loaded(&application, settings, error, recovered);
         loading.close();
         gtk::glib::ControlFlow::Break
     });
 }
 
-fn build_loaded(application: &adw::Application, settings: Settings, load_error: Option<String>) {
+fn build_loaded(
+    application: &adw::Application,
+    settings: Settings,
+    load_error: Option<String>,
+    recovered: Result<Option<crate::recovery::Snapshot>, String>,
+) {
     let app = App::new(Some(application), settings, settings::SaveWorker::new());
     app.restore_prompts();
+    if let Ok(Some(snapshot)) = &recovered {
+        app.restore_recovery(snapshot);
+    }
     app.connect();
     app.refresh_devices();
     app.update_model_label();
@@ -88,6 +105,15 @@ fn build_loaded(application: &adw::Application, settings: Settings, load_error: 
     app.window.present();
     if let Some(error) = load_error {
         dialogs::message(&app.window, "Preferences could not be loaded", &error);
+    }
+    match recovered {
+        Ok(Some(_)) => app.consume_recovery(),
+        Ok(None) => {}
+        Err(error) => dialogs::message(
+            &app.window,
+            "Previous session could not be restored",
+            &format!("{error}\n\nThe recovery file has been preserved."),
+        ),
     }
     // This main-loop source owns the controller until the window closes. All
     // widget callbacks hold weak references, avoiding widget/controller cycles.

@@ -24,6 +24,27 @@ pub fn confirm(
     dialog.present();
 }
 
+pub fn confirm_close(window: &impl IsA<gtk::Window>, action: impl Fn(String) + 'static) {
+    let dialog = adw::MessageDialog::new(
+        Some(window),
+        Some("Close Speech2Text?"),
+        Some(
+            "Active work will be cancelled. Autosave & Close keeps the current transcript and rewrite in a temporary, unencrypted recovery file in the app's data folder. They will be restored on the next launch. Audio is not saved.",
+        ),
+    );
+    dialog.add_responses(&[
+        ("cancel", "Cancel"),
+        ("close", "Close Without Saving"),
+        ("autosave", "Autosave & Close"),
+    ]);
+    dialog.set_response_appearance("close", adw::ResponseAppearance::Destructive);
+    dialog.set_response_appearance("autosave", adw::ResponseAppearance::Suggested);
+    dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("cancel"));
+    dialog.connect_response(None, move |_, response| action(response.to_owned()));
+    dialog.present();
+}
+
 pub fn open(window: &impl IsA<gtk::Window>, model: bool, action: impl Fn(PathBuf) + 'static) {
     let filter = gtk::FileFilter::new();
     if model {

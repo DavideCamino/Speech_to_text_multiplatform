@@ -45,6 +45,26 @@ impl TranscriptState {
         self.text_edited.set(false);
     }
 
+    pub(super) fn snapshot(&self, text: String) -> crate::recovery::TranscriptSnapshot {
+        crate::recovery::TranscriptSnapshot {
+            text,
+            original: self.original.borrow().clone(),
+            dirty: self.is_dirty() || !self.provisional.borrow().is_empty(),
+            text_edited: self.text_edited() || !self.provisional.borrow().is_empty(),
+        }
+    }
+
+    pub(super) fn restore(&self, snapshot: &crate::recovery::TranscriptSnapshot) {
+        let _guard = self.rendering_guard();
+        self.renderer
+            .borrow_mut()
+            .restore(&snapshot.text, snapshot.original.segments.len());
+        *self.original.borrow_mut() = snapshot.original.clone();
+        self.provisional.borrow_mut().clear();
+        self.unexported.set(snapshot.dirty);
+        self.text_edited.set(snapshot.text_edited);
+    }
+
     pub(super) fn prepare_append(&self) {
         self.renderer.borrow_mut().prepare_append();
     }

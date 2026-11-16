@@ -38,6 +38,14 @@ impl TranscriptBuffer {
         self.append_separator = false;
     }
 
+    /// Restore edited text independently from the original subtitle timeline.
+    pub fn restore(&mut self, text: &str, segments: usize) {
+        self.reset();
+        self.buffer.set_text(text);
+        self.rendered_segments = segments;
+        self.prepare_append();
+    }
+
     /// Begin another audio job after idle edits. The left-gravity mark can
     /// remain before text typed at the old end, so explicitly move it past all
     /// edited text before a provisional suffix is inserted/replaced.

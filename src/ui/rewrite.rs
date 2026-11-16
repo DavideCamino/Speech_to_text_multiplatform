@@ -82,6 +82,25 @@ impl State {
         self.unexported
     }
 
+    pub(super) fn snapshot(
+        &self,
+        source: String,
+        prompt: String,
+    ) -> crate::recovery::RewriteSnapshot {
+        crate::recovery::RewriteSnapshot {
+            source,
+            prompt,
+            markdown: self.markdown.clone(),
+            dirty: self.unexported,
+        }
+    }
+
+    pub(super) fn restore(&mut self, snapshot: &crate::recovery::RewriteSnapshot) {
+        self.operation = RewriteOperation::Idle;
+        self.markdown.clone_from(&snapshot.markdown);
+        self.unexported = snapshot.dirty;
+    }
+
     fn reset_result(&mut self) {
         self.markdown.clear();
         self.unexported = false;

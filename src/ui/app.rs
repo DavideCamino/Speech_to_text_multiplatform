@@ -25,6 +25,10 @@ pub(super) struct App {
     pub(super) model_state: RefCell<ModelState>,
     pub(super) settings_writer: RefCell<settings::SaveWorker>,
     pub(super) lifecycle: Cell<WindowLifecycle>,
+    pub(super) close_confirmation: Cell<bool>,
+    pub(super) recovery_path: Option<std::path::PathBuf>,
+    pub(super) recovery_owned: Cell<bool>,
+    pub(super) recovery_task: RefCell<Option<super::recovery_controller::RecoveryTask>>,
     pub(super) rewrite: RewriteView,
     pub(super) rewrite_state: RefCell<rewrite::State>,
     pub(super) settings: RefCell<Settings>,
@@ -85,6 +89,12 @@ impl App {
             model_state: RefCell::default(),
             settings_writer: RefCell::new(settings_writer),
             lifecycle: Cell::default(),
+            close_confirmation: Cell::new(false),
+            recovery_path: settings::data_dir()
+                .ok()
+                .map(|directory| directory.join(crate::recovery::FILE_NAME)),
+            recovery_task: RefCell::default(),
+            recovery_owned: Cell::new(false),
             rewrite,
             rewrite_state: RefCell::default(),
             settings: RefCell::new(settings),
@@ -115,6 +125,7 @@ impl App {
     }
 
     pub(super) fn poll(self: &Rc<Self>) {
+        self.poll_recovery();
         self.poll_preferences_save();
         if self.lifecycle.get() == WindowLifecycle::ReadyToClose {
             return;

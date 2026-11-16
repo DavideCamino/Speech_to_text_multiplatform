@@ -1,5 +1,5 @@
 //! UI-independent transcript data and lossless text/subtitle serialization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     pub start_ms: u64,
     pub end_ms: u64,
@@ -8,7 +8,7 @@ pub struct Segment {
     pub text: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Transcript {
     pub segments: Vec<Segment>,
 }

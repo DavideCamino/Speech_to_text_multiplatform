@@ -12,6 +12,8 @@ use std::rc::Rc;
 pub(super) enum WindowLifecycle {
     #[default]
     Open,
+    SavingRecovery,
+    RestoringRecovery,
     SavingBeforeClose,
     ReadyToClose,
 }
@@ -71,7 +73,7 @@ impl App {
         self.rewrite_state.borrow_mut().operation = RewriteOperation::Idle;
     }
 
-    fn begin_close(&self) {
+    pub(super) fn begin_close(&self) {
         if self.lifecycle.get() != WindowLifecycle::Open {
             return;
         }
@@ -129,22 +131,22 @@ impl App {
             if app.lifecycle.get() == WindowLifecycle::ReadyToClose {
                 return gtk::glib::Propagation::Proceed;
             }
-            if app.lifecycle.get() == WindowLifecycle::SavingBeforeClose {
+            if app.lifecycle.get() != WindowLifecycle::Open || app.close_confirmation.get() {
                 return gtk::glib::Propagation::Stop;
             }
             if app.busy() || app.document.is_dirty() || app.rewrite_state.borrow().is_dirty() {
+                app.close_confirmation.set(true);
                 let weak = Rc::downgrade(&app);
-                dialogs::confirm(
-                    &app.window,
-                    "Close Speech2Text?",
-                    "Active work will be cancelled and any unexported text will be discarded. Audio and transcripts are not saved automatically.",
-                    &[("close", "Discard and Close")],
-                    move |response| {
-                        if response == "close" && let Some(app) = weak.upgrade() {
-                            app.begin_close();
+                dialogs::confirm_close(&app.window, move |response| {
+                    if let Some(app) = weak.upgrade() {
+                        app.close_confirmation.set(false);
+                        match response.as_str() {
+                            "close" => app.begin_close(),
+                            "autosave" => app.autosave_and_close(),
+                            _ => {}
                         }
-                    },
-                );
+                    }
+                });
                 gtk::glib::Propagation::Stop
             } else {
                 app.begin_close();
