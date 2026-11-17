@@ -322,7 +322,19 @@ fi
 
 Repeat with `--features vulkan` before `-- --nocapture` for the Vulkan configuration. Most tests use fixtures and loopback mock servers, not real models or microphones. The ignored native-inference cancellation test requires `SPEECH2TEXT_TEST_MODEL` pointing to a local model and an explicit ignored-test run. Generated vendored bindings may emit warnings separately from first-party checks.
 
-Optional backend tools:
+### Input-method coverage and IBus
+
+The zoom widget-lifetime fixtures explicitly use GTK's simple input method (`gtk-im-context-simple`) to isolate our controller ownership from external input-method services. This does not change the application's normal input method.
+
+**A dedicated IBus integration test is not implemented in the permanent test suite or CI for now.** Passing the regular suite does not guarantee widget cleanup under IBus.
+
+A temporary local diagnostic was executed with a running IBus daemon and `GTK_IM_MODULE=ibus`, using otherwise equivalent displayed text views with and without zoom. Rendered font zoom, Unicode text preservation, and selection preservation passed. After a bounded three-second cleanup wait, both views still had one retained reference: zoom introduced no additional retention in that comparison, but GTK/IBus cleanup was not resolved. The temporary diagnostic was removed after execution. This observation is not a guarantee about long-running memory usage or other desktop environments.
+
+The retained reference does **not** mean IBus was busy or occupied for too long. It only means the widget was still alive three seconds after teardown. The diagnostic did not establish whether the reference is released later, intentionally retained by GTK/IBus, or caused by a cleanup bug. Widget cleanup under IBus therefore remains uncertain; no additional retention attributable to zoom was observed in this comparison.
+
+A future optional IBus test should verify that the service/module is available, compare a plain baseline with a zoom-enabled view, and report environmental retention separately from a zoom-specific regression.
+
+### Optional backend tools
 
 ```sh
 # Explicit model download

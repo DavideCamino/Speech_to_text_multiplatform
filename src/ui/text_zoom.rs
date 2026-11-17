@@ -244,6 +244,7 @@ fn test_font_zoom_ownership() {
     // No window, focus, frame clock, or rendering: test zoom ownership alone.
     // IBus can retain its client widget; do not involve an external IM daemon
     // in a zoom lifetime test. This setting applies only to these test fixtures.
+    // A dedicated IBus integration test is not implemented; see BUILD_FROM_SOURCE.md.
     let view = gtk::TextView::builder()
         .im_module("gtk-im-context-simple")
         .build();
