@@ -30,6 +30,10 @@
 - Settings window default height increased from 580 to 900 pixels, reducing scrolling on larger screens while retaining scrolling on smaller displays.
 - README updated with multi-model server setup, model and reasoning selection, and the Apply workflow.
 
+### Fixed
+
+- Isolated zoom widget-lifetime tests from desktop input-method services by using GTK's simple input method in test fixtures. Added an unshown-widget ownership check and bounded GTK cleanup waits while retaining widget-release assertions. Application input-method behavior is unchanged.
+
 ### Compatibility
 
 - Single-model servers remain supported through a fallback to `/v1/models` when `/models` is unavailable.

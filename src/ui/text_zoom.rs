@@ -231,9 +231,52 @@ pub(super) fn test_markdown_zoom() {
 }
 
 #[cfg(test)]
+fn test_font_zoom_ownership() {
+    let plain = gtk::TextView::builder()
+        .im_module("gtk-im-context-simple")
+        .build();
+    let plain_weak = plain.downgrade();
+    drop(plain);
+    // A baseline without zoom distinguishes widget cleanup from controller ownership.
+    super::tests::support::wait_for_gtk("plain TextView cleanup", || {
+        plain_weak.upgrade().is_none()
+    });
+    // No window, focus, frame clock, or rendering: test zoom ownership alone.
+    // IBus can retain its client widget; do not involve an external IM daemon
+    // in a zoom lifetime test. This setting applies only to these test fixtures.
+    let view = gtk::TextView::builder()
+        .im_module("gtk-im-context-simple")
+        .build();
+    let pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    pane.append(&view);
+    let group = Rc::new(ZoomGroup::default());
+    let zoom = install(&view, &pane, &group);
+    let weak = view.downgrade();
+    pane.remove(&view);
+    drop(view);
+    // Keep both zoom and the pane's installed controllers alive for this check.
+    super::tests::support::wait_for_gtk("unshown zoom TextView cleanup", || {
+        weak.upgrade().is_none()
+    });
+    assert_eq!(
+        zoom.scroll(
+            gdk::ModifierType::CONTROL_MASK,
+            -1.0,
+            gdk::ScrollUnit::Wheel
+        ),
+        glib::Propagation::Proceed
+    );
+}
+
+#[cfg(test)]
 pub(super) fn test_font_zoom() {
-    let view = gtk::TextView::new();
-    let other = gtk::TextView::new();
+    test_font_zoom_ownership();
+    let view = gtk::TextView::builder()
+        .im_module("gtk-im-context-simple")
+        .build();
+    let other = gtk::TextView::builder()
+        .im_module("gtk-im-context-simple")
+        .build();
     let pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
     pane.append(&view);
     pane.append(&other);
@@ -329,9 +372,10 @@ pub(super) fn test_font_zoom() {
     drop(window);
     drop(view);
     drop(pane);
-    assert!(
-        weak.upgrade().is_none(),
-        "zoom must not retain the TextView"
-    );
+    // Presented widgets may have pending GTK layout/style/focus cleanup.
+    // Require eventual release with a bounded main-loop wait, not an arbitrary sleep.
+    super::tests::support::wait_for_gtk("zoom TextView cleanup after window destruction", || {
+        weak.upgrade().is_none()
+    });
     assert_eq!(zoom.scroll(ctrl, -1.0, wheel), glib::Propagation::Proceed);
 }
