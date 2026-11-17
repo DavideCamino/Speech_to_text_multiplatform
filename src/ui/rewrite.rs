@@ -82,6 +82,10 @@ impl State {
         self.unexported
     }
 
+    pub(super) fn has_unsaved_text(&self) -> bool {
+        self.unexported && !self.markdown.trim().is_empty()
+    }
+
     pub(super) fn snapshot(
         &self,
         source: String,

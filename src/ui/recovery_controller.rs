@@ -97,6 +97,12 @@ impl App {
         if self.lifecycle.get() != WindowLifecycle::Open {
             return;
         }
+        // Recheck when the response arrives: content may have changed while
+        // the dialog was open. Never create an empty recovery file.
+        if !self.has_unsaved_content() {
+            self.close_without_saving();
+            return;
+        }
         // Snapshot the displayed text, including partial output, before cancelling jobs.
         let snapshot = self.recovery_snapshot();
         self.lifecycle.set(WindowLifecycle::SavingRecovery);

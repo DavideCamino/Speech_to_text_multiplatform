@@ -157,9 +157,16 @@ impl App {
         self.poll_model_download();
     }
 
+    /// Empty edits are still tracked internally, but need neither export nor recovery.
+    pub(super) fn has_unsaved_content(&self) -> bool {
+        self.document
+            .has_unsaved_text(&super::views::buffer_text(&self.main.transcript))
+            || self.rewrite_state.borrow().has_unsaved_text()
+    }
+
     pub(super) fn refresh(&self) {
         self.unsaved_indicator
-            .set_visible(self.document.is_dirty() || self.rewrite_state.borrow().is_dirty());
+            .set_visible(self.has_unsaved_content());
         self.window
             .set_sensitive(self.lifecycle.get() == WindowLifecycle::Open);
         self.refresh_transcript_editability();

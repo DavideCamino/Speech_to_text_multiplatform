@@ -24,21 +24,36 @@ pub fn confirm(
     dialog.present();
 }
 
-pub fn confirm_close(window: &impl IsA<gtk::Window>, action: impl Fn(String) + 'static) {
+pub fn confirm_close(
+    window: &impl IsA<gtk::Window>,
+    has_unsaved_content: bool,
+    action: impl Fn(String) + 'static,
+) {
     let dialog = adw::MessageDialog::new(
         Some(window),
         Some("Close Speech2Text?"),
-        Some(
-            "Active work will be cancelled. Autosave & Close keeps the current transcript and rewrite in a temporary, unencrypted recovery file in the app's data folder. They will be restored on the next launch. Audio is not saved.",
-        ),
+        Some(if has_unsaved_content {
+            "Active work will be cancelled. Autosave & Close keeps the current transcript and rewrite in a temporary, unencrypted recovery file in the app's data folder. They will be restored on the next launch. Audio is not saved."
+        } else {
+            "Active work will be cancelled. Do you want to close the app?"
+        }),
     );
     dialog.add_responses(&[
         ("cancel", "Cancel"),
-        ("close", "Close Without Saving"),
-        ("autosave", "Autosave & Close"),
+        (
+            "close",
+            if has_unsaved_content {
+                "Close Without Saving"
+            } else {
+                "Cancel Work and Close"
+            },
+        ),
     ]);
+    if has_unsaved_content {
+        dialog.add_response("autosave", "Autosave & Close");
+        dialog.set_response_appearance("autosave", adw::ResponseAppearance::Suggested);
+    }
     dialog.set_response_appearance("close", adw::ResponseAppearance::Destructive);
-    dialog.set_response_appearance("autosave", adw::ResponseAppearance::Suggested);
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
     dialog.connect_response(None, move |_, response| action(response.to_owned()));

@@ -203,6 +203,37 @@ pub(super) fn discard_after_preferences_failure_removes_snapshot() {
     assert!(!path.exists());
 }
 
+pub(super) fn empty_edits_close_without_autosave() {
+    for (text, direct_autosave) in [("", false), (" \t\n", false), ("", true)] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recovery.json");
+        let mut app = test_app();
+        std::rc::Rc::get_mut(&mut app).unwrap().recovery_path = Some(path.clone());
+        app.connect();
+        app.main
+            .transcript
+            .buffer()
+            .set_text("Text that was erased");
+        app.main.transcript.buffer().set_text(text);
+        assert!(app.document.is_dirty());
+        assert!(!app.has_unsaved_content());
+        app.window.present();
+        if direct_autosave {
+            app.autosave_and_close();
+        } else {
+            app.window.close();
+        }
+        // No confirmation and no recovery write, just the normal final preferences save.
+        assert_eq!(app.lifecycle.get(), WindowLifecycle::SavingBeforeClose);
+        assert!(!app.close_confirmation.get());
+        wait_for_background("empty content close", || {
+            app.poll_preferences_save();
+            app.lifecycle.get() == WindowLifecycle::ReadyToClose
+        });
+        assert!(!path.exists());
+    }
+}
+
 pub(super) fn lifecycle_job_ownership() {
     use crate::llm;
     let app = test_app();
@@ -233,6 +264,8 @@ pub(super) fn lifecycle_job_ownership() {
             .expect("active work needs confirmation")
     };
     let dialog = confirmation();
+    assert!(!dialog.has_response("autosave"));
+    assert!(dialog.has_response("cancel") && dialog.has_response("close"));
     dialog.response("cancel");
     dialog.close();
     assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);

@@ -19,6 +19,20 @@ pub(super) fn header_unsaved_indicator() {
         Some("Unsaved changes")
     );
 
+    // Erased/whitespace-only edits have nothing to save, even though dirty tracking remains.
+    for text in ["Draft", "", " \t\n "] {
+        app.main.transcript.buffer().set_text(text);
+        assert_eq!(app.unsaved_indicator.is_visible(), !text.trim().is_empty());
+    }
+    app.clear_transcript();
+    app.render_transcript();
+    app.document.set_provisional("Live speech".into());
+    app.render_transcript();
+    assert!(app.unsaved_indicator.is_visible());
+    app.document.clear_provisional();
+    app.render_transcript();
+    assert!(!app.unsaved_indicator.is_visible());
+
     // Idle text edits update immediately. A stale export cannot hide newer edits.
     app.main.transcript.buffer().set_text("Edited transcript");
     assert!(app.unsaved_indicator.is_visible());
@@ -55,6 +69,8 @@ pub(super) fn header_unsaved_indicator() {
     tx.send(llm::Event::Finished(Ok("Done".into()))).unwrap();
     app.poll_rewrite();
 
+    app.main.transcript.buffer().set_text("");
+    assert!(app.unsaved_indicator.is_visible()); // nonempty unsaved rewrite still matters
     app.main.transcript.buffer().set_text("Another edit");
     app.mark_export_saved(ExportKind::TranscriptText, "Another edit");
     assert!(app.unsaved_indicator.is_visible()); // rewrite is still unsaved
@@ -81,6 +97,21 @@ pub(super) fn header_unsaved_indicator() {
     restored.mark_export_saved(ExportKind::TranscriptText, "Unsaved edit");
     assert!(!restored.unsaved_indicator.is_visible());
     restored.window.destroy();
+
+    // A saved nonempty rewrite cannot make an erased transcript count as unsaved content.
+    app.main.transcript.buffer().set_text("");
+    assert!(!app.unsaved_indicator.is_visible());
+    assert!(!app.has_unsaved_content());
+    let mut empty = app.recovery_snapshot();
+    empty.transcript.text = " \t\n".into();
+    empty.transcript.dirty = true;
+    empty.rewrite.markdown = " \n".into();
+    empty.rewrite.dirty = true;
+    let empty_restored = test_app();
+    empty_restored.restore_recovery(&empty);
+    assert!(!empty_restored.has_unsaved_content());
+    assert!(!empty_restored.unsaved_indicator.property::<bool>("visible"));
+    empty_restored.window.destroy();
 
     app.clear_transcript();
     app.reset_rewrite();

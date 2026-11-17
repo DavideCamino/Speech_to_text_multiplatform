@@ -107,6 +107,10 @@ impl TranscriptState {
         self.unexported.get()
     }
 
+    pub(super) fn has_unsaved_text(&self, text: &str) -> bool {
+        !text.trim().is_empty() && (self.is_dirty() || !self.provisional.borrow().trim().is_empty())
+    }
+
     pub(super) fn text_edited(&self) -> bool {
         self.text_edited.get()
     }

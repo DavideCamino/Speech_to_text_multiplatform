@@ -134,10 +134,11 @@ impl App {
             if app.lifecycle.get() != WindowLifecycle::Open || app.close_confirmation.get() {
                 return gtk::glib::Propagation::Stop;
             }
-            if app.busy() || app.document.is_dirty() || app.rewrite_state.borrow().is_dirty() {
+            let has_unsaved_content = app.has_unsaved_content();
+            if app.busy() || has_unsaved_content {
                 app.close_confirmation.set(true);
                 let weak = Rc::downgrade(&app);
-                dialogs::confirm_close(&app.window, move |response| {
+                dialogs::confirm_close(&app.window, has_unsaved_content, move |response| {
                     if let Some(app) = weak.upgrade() {
                         app.close_confirmation.set(false);
                         match response.as_str() {
