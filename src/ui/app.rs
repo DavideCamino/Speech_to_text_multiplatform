@@ -18,6 +18,7 @@ use std::{
 
 pub(super) struct App {
     pub(super) window: adw::ApplicationWindow,
+    pub(super) unsaved_indicator: gtk::Label,
     pub(super) stack: gtk::Stack,
     pub(super) main: MainView,
     pub(super) preferences: preferences::Preferences,
@@ -55,10 +56,26 @@ impl App {
         stack.add_named(&rewrite.root, Some("rewrite"));
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
-        header.set_title_widget(Some(&adw::WindowTitle::new(
-            "Speech2Text",
-            "Private, on-device transcription",
-        )));
+        let title = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        title_row.set_halign(gtk::Align::Center);
+        let name = gtk::Label::new(Some("Speech2Text"));
+        name.add_css_class("title");
+        let unsaved_indicator = gtk::Label::builder()
+            .label("<span size=\"5000\">●</span>")
+            .use_markup(true)
+            .visible(false)
+            .tooltip_text("Unsaved changes")
+            .accessible_role(gtk::AccessibleRole::Img)
+            .build();
+        unsaved_indicator.update_property(&[gtk::accessible::Property::Label("Unsaved changes")]);
+        title_row.append(&name);
+        title_row.append(&unsaved_indicator);
+        title.append(&title_row);
+        let subtitle = gtk::Label::new(Some("Private, on-device transcription"));
+        subtitle.add_css_class("subtitle");
+        title.append(&subtitle);
+        header.set_title_widget(Some(&title));
         header.pack_end(&menu::button());
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&stack));
@@ -82,6 +99,7 @@ impl App {
         let document = TranscriptState::new(main.transcript.buffer());
         Rc::new(Self {
             window,
+            unsaved_indicator,
             stack,
             main,
             preferences,
@@ -140,6 +158,8 @@ impl App {
     }
 
     pub(super) fn refresh(&self) {
+        self.unsaved_indicator
+            .set_visible(self.document.is_dirty() || self.rewrite_state.borrow().is_dirty());
         self.window
             .set_sensitive(self.lifecycle.get() == WindowLifecycle::Open);
         self.refresh_transcript_editability();

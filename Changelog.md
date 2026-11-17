@@ -4,6 +4,7 @@
 
 ### Added
 
+- **Unsaved-changes indicator:** a theme-aware dot beside Speech2Text in the header bar shows when the transcript or rewrite has unexported changes. It updates after edits, recognition, generation, exports, and session recovery; autosaving does not clear it. The indicator includes an accessible label and an Unsaved changes tooltip.
 - **Save-on-close recovery:** closing with unsaved content or active work offers Cancel, Close Without Saving, and Autosave & Close.
 - **Temporary recovery snapshots:** atomically save edited transcripts, original subtitle timings, rewrite source/instructions/output, recognition context, and unsaved flags to `recovery.json` in the app's data folder. Audio and authentication tokens are excluded.
 - **Next-launch restoration:** restore saved content without restarting recording or generation, retain unsaved flags, and delete the recovery file only after restoration succeeds.

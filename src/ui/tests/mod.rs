@@ -9,6 +9,7 @@ mod rewrite;
 pub(super) mod support;
 mod surfaces;
 mod transcription;
+mod unsaved;
 mod zoom;
 
 use super::{markdown_buffer, markdown_scroll, model_controller, text_zoom};
@@ -22,6 +23,7 @@ fn settings_pages_and_menu_surfaces_build() {
     }
     adw::init().expect("libadwaita initialization");
     // Check settings controls before frame-timing-sensitive rendering checks.
+    unsaved::header_unsaved_indicator();
     lifecycle::autosave_and_recovery();
     lifecycle::failed_autosave_keeps_content();
     lifecycle::discard_after_preferences_failure_removes_snapshot();

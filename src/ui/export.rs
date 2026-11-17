@@ -36,5 +36,6 @@ impl App {
             }
             ExportKind::Subtitles => self.document.mark_subtitles_saved(snapshot),
         }
+        self.refresh();
     }
 }
