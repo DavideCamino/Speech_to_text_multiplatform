@@ -1,6 +1,5 @@
 //! Widget signals and window/menu actions, with weak controller references.
 use super::{app::App, dialogs, export::ExportKind, markdown_document, menu, views::buffer_text};
-use crate::transcription::Source;
 use adw::prelude::*;
 use std::rc::Rc;
 
@@ -146,13 +145,11 @@ impl App {
             let weak = Rc::downgrade(&app);
             dialogs::open(&app.window, false, move |path| {
                 if let Some(app) = weak.upgrade() {
-                    app.request_start(Source::File(path));
+                    app.queue_audio(path);
                 }
             });
         });
-        on_click(&self.main.record, self, |app| {
-            app.request_start(Source::Microphone)
-        });
+        on_click(&self.main.record, self, |app| app.start_selected_source());
         on_click(&self.main.stop, self, |app| app.request_stop());
         on_click(&self.main.cancel, self, |app| app.request_cancel());
         on_click(&self.main.copy, self, |app| {

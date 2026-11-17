@@ -20,6 +20,7 @@
 
 ### Changed
 
+- Opening audio now queues the file and displays its name without starting transcription. Record becomes Start; Replace/Append confirmation appears when Start is clicked. Cancel clears the selection without deleting the audio file or existing transcript. Completion or cancellation returns the controls to microphone recording mode, preserving finalized text.
 - The unsaved-changes dot and autosave close option now require non-whitespace, unexported transcript or rewrite text. Erasing all text no longer prompts to save an empty recovery file; active work still requires cancellation confirmation without an autosave option when no text needs saving.
 - Rewrite no longer initiates model loading. Unready models require applying the selection in Settings first.
 - Rewrite and conflicting controls remain disabled while a model loads. Loading completion or errors appear in the main and rewrite views.

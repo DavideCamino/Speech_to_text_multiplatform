@@ -35,6 +35,7 @@ pub(super) struct App {
     pub(super) settings: RefCell<Settings>,
     pub(super) document: TranscriptState,
     pub(super) session: RefCell<TranscriptionSession>,
+    pub(super) selected_audio: RefCell<Option<std::path::PathBuf>>,
     pub(super) device_discovery: RefCell<Option<DeviceDiscovery>>,
 }
 
@@ -118,6 +119,7 @@ impl App {
             settings: RefCell::new(settings),
             document,
             session: RefCell::default(),
+            selected_audio: RefCell::default(),
             device_discovery: RefCell::default(),
         })
     }

@@ -82,6 +82,28 @@ impl TranscriptionSession {
 }
 
 impl App {
+    pub(super) fn queue_audio(&self, path: std::path::PathBuf) {
+        // File chooser callbacks can arrive after another operation has started.
+        if self.busy() {
+            return;
+        }
+        *self.selected_audio.borrow_mut() = Some(path);
+        self.main.status.set_text(
+            "Audio selected. Click Start to transcribe, or Cancel to return to recording.",
+        );
+        self.refresh();
+    }
+
+    pub(super) fn start_selected_source(self: &Rc<Self>) {
+        let source = self
+            .selected_audio
+            .borrow()
+            .clone()
+            .map(Source::File)
+            .unwrap_or(Source::Microphone);
+        self.request_start(source);
+    }
+
     pub(super) fn request_stop(&self) {
         if !self.session.borrow().request_stop() {
             return;
@@ -93,9 +115,16 @@ impl App {
     }
 
     pub(super) fn request_cancel(&self) {
+        let cleared_audio = self.selected_audio.borrow_mut().take().is_some();
         let transcribing = self.session.borrow().request_cancel();
         let downloading = self.model_state.borrow().operation.request_cancel();
         if !transcribing && !downloading {
+            if cleared_audio {
+                self.main
+                    .status
+                    .set_text("Audio selection cleared. Ready to record.");
+                self.refresh();
+            }
             return;
         }
         self.main.status.set_text(if downloading {
@@ -139,6 +168,7 @@ impl App {
             return;
         }
         let weak = Rc::downgrade(self);
+        let selection = self.selected_audio.borrow().clone();
         // Dialog responses may occur only once, but use a cell to move Source from an Fn callback.
         let source = RefCell::new(Some(source));
         dialogs::confirm(
@@ -150,6 +180,9 @@ impl App {
                 if (response == "replace" || response == "append")
                     && let (Some(app), Some(source)) = (weak.upgrade(), source.borrow_mut().take())
                 {
+                    if *app.selected_audio.borrow() != selection {
+                        return;
+                    }
                     app.start(source, response == "append");
                 }
             },
@@ -175,6 +208,10 @@ impl App {
         let kind = match &source {
             Source::File(_) => SessionSource::File,
             Source::Microphone => SessionSource::Microphone,
+        };
+        *self.selected_audio.borrow_mut() = match &source {
+            Source::File(path) => Some(path.clone()),
+            Source::Microphone => None,
         };
         self.main.progress.set_fraction(0.0);
         let job = transcription::start(
@@ -222,7 +259,17 @@ impl App {
                     ));
                 }
                 Event::Finished(result) => {
+                    let file = matches!(
+                        *self.session.borrow(),
+                        TranscriptionSession::Running {
+                            source: SessionSource::File,
+                            ..
+                        }
+                    );
                     let cancelled = self.session.borrow_mut().finish();
+                    if file {
+                        self.selected_audio.borrow_mut().take();
+                    }
                     self.check_model();
                     self.main.meter.set_value(0.0);
                     match result {
@@ -285,12 +332,36 @@ impl App {
         };
         let cancelling = session_cancelling || self.model_state.borrow().operation.cancelling();
         let has_segments = self.document.has_segments();
+        let selected_audio = self.selected_audio.borrow().clone();
+        let has_audio = selected_audio.is_some();
+        self.main
+            .record
+            .set_label(if has_audio { "Start" } else { "Record" });
+        self.main.record.set_tooltip_text(Some(if has_audio {
+            "Transcribe the selected audio file"
+        } else {
+            "Record from the microphone"
+        }));
+        self.main.selected_audio.set_visible(has_audio);
+        if let Some(path) = selected_audio {
+            let name = path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy();
+            self.main.selected_audio.set_text(&format!("Audio: {name}"));
+            self.main
+                .selected_audio
+                .set_tooltip_text(Some(&path.to_string_lossy()));
+        } else {
+            self.main.selected_audio.set_text("");
+            self.main.selected_audio.set_tooltip_text(None);
+        }
         self.main.open.set_sensitive(!busy && has_model);
         self.main.record.set_sensitive(!busy && has_model);
         self.main.stop.set_sensitive(can_stop);
         self.main
             .cancel
-            .set_sensitive((transcribing || downloading) && !cancelling);
+            .set_sensitive((transcribing || downloading || (has_audio && !busy)) && !cancelling);
         self.main.srt.set_sensitive(has_segments && !busy);
         for button in [&self.main.copy, &self.main.txt] {
             button.set_sensitive(has_text && !busy);

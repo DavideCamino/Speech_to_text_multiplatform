@@ -22,6 +22,129 @@ use std::{
     },
 };
 
+pub(super) fn queued_audio_controls() {
+    use crate::{transcript::Segment, ui::model_controller::ModelAvailability};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("Selected audio.wav");
+    std::fs::write(&path, "not decoded until Start").unwrap();
+    let app = test_app();
+    app.connect();
+    app.model_state.borrow_mut().availability = ModelAvailability::Available;
+    app.refresh();
+    assert_eq!(app.main.record.label().as_deref(), Some("Record"));
+    assert!(!app.main.cancel.is_sensitive());
+    app.queue_audio(path.clone());
+    assert!(!app.busy() && !app.session.borrow().is_running());
+    assert_eq!(app.selected_audio.borrow().as_ref(), Some(&path));
+    assert_eq!(app.main.record.label().as_deref(), Some("Start"));
+    assert!(
+        app.main
+            .selected_audio
+            .text()
+            .contains("Selected audio.wav")
+    );
+    assert!(app.main.cancel.is_sensitive());
+    app.main
+        .transcript
+        .buffer()
+        .set_text("Keep this transcript");
+    app.main.cancel.emit_clicked();
+    assert!(app.selected_audio.borrow().is_none());
+    assert_eq!(app.main.record.label().as_deref(), Some("Record"));
+    assert!(!app.main.selected_audio.property::<bool>("visible"));
+    assert!(!app.main.cancel.is_sensitive());
+    assert_eq!(buffer_text(&app.main.transcript), "Keep this transcript");
+    assert!(path.exists());
+
+    // Replace/Append is asked at Start, not at selection time.
+    app.queue_audio(path.clone());
+    app.main.record.emit_clicked();
+    assert!(!app.session.borrow().is_running());
+    let dialog = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .find(|dialog| dialog.heading().as_deref() == Some("Start a new transcription?"))
+        .unwrap();
+    dialog.response("cancel");
+    dialog.close();
+    assert_eq!(app.selected_audio.borrow().as_ref(), Some(&path));
+    assert_eq!(buffer_text(&app.main.transcript), "Keep this transcript");
+    app.main.record.emit_clicked();
+    let dialog = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .find(|dialog| dialog.heading().as_deref() == Some("Start a new transcription?"))
+        .unwrap();
+    app.request_cancel();
+    dialog.response("append");
+    dialog.close();
+    assert!(!app.session.borrow().is_running()); // stale confirmation cannot restart a cleared file
+    assert_eq!(buffer_text(&app.main.transcript), "Keep this transcript");
+    app.queue_audio(path.clone());
+
+    // With an empty document, Start creates a file job, never a microphone job.
+    app.clear_transcript();
+    app.refresh();
+    app.main.record.emit_clicked();
+    assert!(matches!(
+        *app.session.borrow(),
+        TranscriptionSession::Running {
+            source: SessionSource::File,
+            ..
+        }
+    ));
+    assert!(!app.main.open.is_sensitive() && !app.main.record.is_sensitive());
+    app.queue_audio(root.path().join("ignored-while-busy.wav"));
+    assert_eq!(app.selected_audio.borrow().as_ref(), Some(&path));
+    app.main.cancel.emit_clicked();
+    assert!(app.session.borrow().cancelling());
+    assert!(app.selected_audio.borrow().is_none());
+    assert_eq!(app.main.record.label().as_deref(), Some("Record"));
+    // Drop the real worker (no model was configured) and test its completion UI
+    // deterministically through the normal typed worker channel instead.
+    app.session.borrow_mut().finish();
+    let (tx, events) = mpsc::sync_channel(4);
+    let cancelled = Arc::new(AtomicBool::new(true));
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::File,
+        job: Job {
+            events,
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: cancelled,
+        },
+    };
+    tx.send(Event::Final(vec![Segment {
+        start_ms: 0,
+        end_ms: 1000,
+        text: "Finalized words".into(),
+    }]))
+    .unwrap();
+    tx.send(Event::Finished(Ok(()))).unwrap();
+    app.poll_transcription();
+    assert!(!app.session.borrow().is_running());
+    assert_eq!(buffer_text(&app.main.transcript), "Finalized words");
+    assert!(path.exists());
+
+    // A normal file completion also releases the selection and restores Record.
+    app.model_state.borrow_mut().availability = ModelAvailability::Available;
+    app.queue_audio(path.clone());
+    let (tx, events) = mpsc::sync_channel(1);
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::File,
+        job: Job {
+            events,
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        },
+    };
+    tx.send(Event::Finished(Ok(()))).unwrap();
+    app.poll_transcription();
+    assert!(app.selected_audio.borrow().is_none());
+    assert_eq!(app.main.record.label().as_deref(), Some("Record"));
+    assert_eq!(buffer_text(&app.main.transcript), "Finalized words");
+    app.window.destroy();
+}
+
 pub(super) fn editable_transcript() {
     use crate::transcript::Segment;
     let app = test_app();

@@ -88,6 +88,7 @@ pub struct MainView {
     pub root: gtk::Box,
     pub open: gtk::Button,
     pub record: gtk::Button,
+    pub selected_audio: gtk::Label,
     pub stop: gtk::Button,
     pub cancel: gtk::Button,
     pub transcript: gtk::TextView,
@@ -148,6 +149,13 @@ impl MainView {
         meter.set_tooltip_text(Some("Microphone input level"));
         actions.append(&meter);
         root.append(&actions);
+        let selected_audio = gtk::Label::builder()
+            .halign(Align::Start)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .visible(false)
+            .build();
+        selected_audio.add_css_class("dim-label");
+        root.append(&selected_audio);
         let transcript = text_view(true);
         let provisional = gtk::TextTag::builder()
             .name("provisional")
@@ -182,6 +190,7 @@ impl MainView {
             root,
             open,
             record,
+            selected_audio,
             stop,
             cancel,
             transcript,

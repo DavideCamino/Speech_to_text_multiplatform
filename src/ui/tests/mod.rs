@@ -23,6 +23,7 @@ fn settings_pages_and_menu_surfaces_build() {
     }
     adw::init().expect("libadwaita initialization");
     // Check settings controls before frame-timing-sensitive rendering checks.
+    transcription::queued_audio_controls();
     unsaved::header_unsaved_indicator();
     lifecycle::empty_edits_close_without_autosave();
     lifecycle::autosave_and_recovery();

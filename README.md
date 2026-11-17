@@ -29,7 +29,9 @@ Choose the spoken language, **Auto**, or **Custom…** for another supported Whi
 
 ### 2. Transcribe a file or microphone
 
-Open an audio file, or select an **Audio input** in Settings and start recording. Use **Refresh** after connecting or disconnecting a microphone. Optionally expand **Context (optional)** and enter names or vocabulary before starting; this guides recognition rather than acting as an instruction to rewrite the result.
+Choose **Open Audio…** to select a file without starting transcription. The filename appears below the controls and **Record** changes to **Start**. Click **Start** when ready; if a transcript already exists, choose Replace or Append then. **Cancel** clears the selected audio and returns the button to **Record**, without deleting the file or existing transcript. Completing or cancelling a file transcription also returns to microphone mode; cancellation keeps finalized text.
+
+To record from a microphone, select an **Audio input** in Settings and click **Record** with no audio file selected. Use **Refresh** after connecting or disconnecting a microphone. Optionally expand **Context (optional)** and enter names or vocabulary before starting; this guides recognition rather than acting as an instruction to rewrite the result.
 
 Grey text is provisional and may change. **Stop** ends microphone capture and finishes buffered audio. **Cancel** discards unfinished work but keeps finalized text; model loading must finish before cancellation can complete.
 
