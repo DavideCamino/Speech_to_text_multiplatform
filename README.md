@@ -8,7 +8,7 @@ Software debeloped by **Davide Camino**.
 
 ## Features
 
-- **Audio files:** transcribe WAV, MP3, FLAC, OGG/Vorbis, and M4A (AAC/ALAC).
+- **Audio files:** queue one or more WAV, MP3, FLAC, OGG/Vorbis, or M4A (AAC/ALAC) files, reorder them with drag-and-drop or buttons, and transcribe sequentially with current-file progress and total time remaining.
 - **Microphone:** choose an input, monitor recording duration and level, and see live provisional text alongside finalized text.
 - **Recognition settings:** automatic language detection, supported Whisper language codes, and optional recognition context for names or specialist vocabulary.
 - **Model library:** download multilingual Tiny, Base, Small, Medium, or Large V3 with SHA-256 verification; use or copy an existing local model. Downloads and copies support cancellation.
@@ -29,7 +29,13 @@ Choose the spoken language, **Auto**, or **Custom…** for another supported Whi
 
 ### 2. Transcribe a file or microphone
 
-Choose **Open Audio…** to select a file without starting transcription. The filename appears below the controls and **Record** changes to **Start**. Click **Start** when ready; if a transcript already exists, choose Replace or Append then. **Cancel** clears the selected audio and returns the button to **Record**, without deleting the file or existing transcript. Completing or cancelling a file transcription also returns to microphone mode; cancellation keeps finalized text.
+Choose **Open Audio…** to select one or more files without starting transcription. An expandable queue appears below the controls and **Record** changes to **Start**. Expand the queue to reorder files by dragging a row or using its up/down buttons, or remove individual files. Opening audio again replaces the pending queue. Queue editing is disabled while processing.
+
+Click **Start** when ready; if a transcript already exists, choose **Replace** or **Append** once for the entire batch. Files run sequentially in queue order, with a blank line between files that produce text. Subtitle timestamps continue along the original subtitle timeline.
+
+The progress bar shows the current file's progress. Beside it, **File 2 of 5 · 12 min remaining** shows the current position and time remaining for the current file plus all pending files. Time remaining also appears for a single file. It is calculated from audio durations and observed processing speed; **Calculating time remaining…** appears until enough information is available, or when a pending file's duration cannot be determined.
+
+**Cancel** clears the queue and stops the current file without starting the next. Finalized text is kept, unfinished provisional text is removed when the worker finishes, and source audio is never deleted or modified. A file error keeps completed text and continues with the next file; failures are summarized at the end. Completing or cancelling the batch returns to microphone mode. Queued files are not saved in recovery snapshots and do not resume automatically.
 
 To record from a microphone, select an **Audio input** in Settings and click **Record** with no audio file selected. Use **Refresh** after connecting or disconnecting a microphone. Optionally expand **Context (optional)** and enter names or vocabulary before starting; this guides recognition rather than acting as an instruction to rewrite the result.
 

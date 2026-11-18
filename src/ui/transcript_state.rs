@@ -15,6 +15,7 @@ pub(super) struct TranscriptState {
     // Kept outside the renderer's RefCell: GTK emits changed synchronously while
     // the renderer is borrowed. The callback must be able to inspect this flag.
     rendering: Cell<bool>,
+    file_boundary: Cell<bool>,
 }
 
 impl TranscriptState {
@@ -26,6 +27,7 @@ impl TranscriptState {
             unexported: Cell::new(false),
             text_edited: Cell::new(false),
             rendering: Cell::new(false),
+            file_boundary: Cell::new(false),
         }
     }
 
@@ -43,6 +45,7 @@ impl TranscriptState {
         self.provisional.borrow_mut().clear();
         self.unexported.set(false);
         self.text_edited.set(false);
+        self.file_boundary.set(false);
     }
 
     pub(super) fn snapshot(&self, text: String) -> crate::recovery::TranscriptSnapshot {
@@ -66,7 +69,13 @@ impl TranscriptState {
     }
 
     pub(super) fn prepare_append(&self) {
+        self.file_boundary.set(false);
         self.renderer.borrow_mut().prepare_append();
+    }
+
+    pub(super) fn prepare_file_append(&self) {
+        self.file_boundary.set(true);
+        self.renderer.borrow_mut().prepare_file_append();
     }
 
     pub(super) fn clear_provisional(&self) {
@@ -76,9 +85,14 @@ impl TranscriptState {
     pub(super) fn accept_final(&self, segments: Vec<Segment>) -> bool {
         let mut original = self.original.borrow_mut();
         let previous_len = original.segments.len();
-        original.append(segments);
+        if self.file_boundary.get() {
+            original.append_file(segments);
+        } else {
+            original.append(segments);
+        }
         let changed = original.segments.len() > previous_len;
         if changed {
+            self.file_boundary.set(false);
             self.unexported.set(true);
         }
         changed

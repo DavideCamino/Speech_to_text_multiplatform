@@ -82,23 +82,30 @@ impl TranscriptionSession {
 }
 
 impl App {
-    pub(super) fn queue_audio(&self, path: std::path::PathBuf) {
+    #[cfg(test)]
+    pub(super) fn queue_audio(self: &Rc<Self>, path: std::path::PathBuf) {
+        self.queue_audios(vec![path]);
+    }
+
+    pub(super) fn queue_audios(self: &Rc<Self>, paths: Vec<std::path::PathBuf>) {
         // File chooser callbacks can arrive after another operation has started.
-        if self.busy() {
+        if self.busy() || paths.is_empty() {
             return;
         }
-        *self.selected_audio.borrow_mut() = Some(path);
+        self.audio_queue.borrow_mut().replace(paths);
+        self.rebuild_audio_queue();
         self.main.status.set_text(
-            "Audio selected. Click Start to transcribe, or Cancel to return to recording.",
+            "Audio selected. Reorder files if needed, then click Start. Cancel returns to recording.",
         );
         self.refresh();
     }
 
     pub(super) fn start_selected_source(self: &Rc<Self>) {
         let source = self
-            .selected_audio
+            .audio_queue
             .borrow()
-            .clone()
+            .selected()
+            .cloned()
             .map(Source::File)
             .unwrap_or(Source::Microphone);
         self.request_start(source);
@@ -115,7 +122,8 @@ impl App {
     }
 
     pub(super) fn request_cancel(&self) {
-        let cleared_audio = self.selected_audio.borrow_mut().take().is_some();
+        let cleared_audio = !self.audio_queue.borrow().files.is_empty();
+        self.audio_queue.borrow_mut().clear();
         let transcribing = self.session.borrow().request_cancel();
         let downloading = self.model_state.borrow().operation.request_cancel();
         if !transcribing && !downloading {
@@ -168,7 +176,7 @@ impl App {
             return;
         }
         let weak = Rc::downgrade(self);
-        let selection = self.selected_audio.borrow().clone();
+        let selection = self.audio_queue.borrow().revision;
         // Dialog responses may occur only once, but use a cell to move Source from an Fn callback.
         let source = RefCell::new(Some(source));
         dialogs::confirm(
@@ -180,7 +188,7 @@ impl App {
                 if (response == "replace" || response == "append")
                     && let (Some(app), Some(source)) = (weak.upgrade(), source.borrow_mut().take())
                 {
-                    if *app.selected_audio.borrow() != selection {
+                    if app.audio_queue.borrow().revision != selection {
                         return;
                     }
                     app.start(source, response == "append");
@@ -197,8 +205,16 @@ impl App {
         if self.busy() {
             return;
         }
+        let continuation = self
+            .audio_queue
+            .borrow()
+            .batch
+            .as_ref()
+            .is_some_and(|batch| batch.index > 0);
         if !append {
             self.clear_transcript();
+        } else if continuation {
+            self.document.prepare_file_append();
         } else {
             self.document.prepare_append();
         }
@@ -209,10 +225,20 @@ impl App {
             Source::File(_) => SessionSource::File,
             Source::Microphone => SessionSource::Microphone,
         };
-        *self.selected_audio.borrow_mut() = match &source {
-            Source::File(path) => Some(path.clone()),
-            Source::Microphone => None,
-        };
+        {
+            let mut queue = self.audio_queue.borrow_mut();
+            match &source {
+                Source::File(path) => {
+                    if queue.selected() != Some(path) {
+                        queue.replace(vec![path.clone()]);
+                    }
+                    if queue.batch.is_none() {
+                        queue.begin();
+                    }
+                }
+                Source::Microphone => queue.clear(),
+            }
+        }
         self.main.progress.set_fraction(0.0);
         let job = transcription::start(
             source,
@@ -239,7 +265,18 @@ impl App {
                         self.main.status.set_text(&text);
                     }
                 }
-                Event::Progress(fraction) => self.main.progress.set_fraction(fraction),
+                Event::Progress(fraction) => {
+                    let fraction = if fraction.is_finite() {
+                        fraction.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    self.main.progress.set_fraction(fraction);
+                    if let Some(batch) = &mut self.audio_queue.borrow_mut().batch {
+                        batch.fraction = batch.fraction.max(fraction);
+                    }
+                    self.refresh_file_progress();
+                }
                 Event::Final(segments) => {
                     transcript_changed |= self.document.accept_final(segments);
                 }
@@ -267,22 +304,60 @@ impl App {
                         }
                     );
                     let cancelled = self.session.borrow_mut().finish();
+                    // Flush this file before preparing the next boundary. Never
+                    // render a prior file's events into the next file's state.
+                    self.document.clear_provisional();
+                    self.render_transcript();
+                    transcript_changed = false;
+                    if file && !cancelled && self.lifecycle.get() == WindowLifecycle::Open {
+                        if result.is_ok()
+                            && let Some(batch) = &mut self.audio_queue.borrow_mut().batch
+                        {
+                            batch.fraction = 1.0;
+                        }
+                        let next = self
+                            .audio_queue
+                            .borrow_mut()
+                            .advance(result.as_ref().err().map(String::as_str));
+                        if let Some(path) = next {
+                            self.start(Source::File(path), true);
+                            continue;
+                        }
+                    }
+                    let failures = self
+                        .audio_queue
+                        .borrow()
+                        .batch
+                        .as_ref()
+                        .map(|batch| batch.failures.clone())
+                        .unwrap_or_default();
                     if file {
-                        self.selected_audio.borrow_mut().take();
+                        self.audio_queue.borrow_mut().clear();
                     }
                     self.check_model();
                     self.main.meter.set_value(0.0);
-                    match result {
-                        Ok(()) => self.main.status.set_text(if cancelled {
-                            "Cancelled. Completed text has been kept."
-                        } else {
-                            "Transcription complete."
-                        }),
-                        Err(error) => {
-                            self.main
-                                .status
-                                .set_text("Transcription failed. Completed text has been kept.");
-                            dialogs::message(&self.window, "Transcription failed", &error);
+                    if cancelled {
+                        self.main
+                            .status
+                            .set_text("Cancelled. Completed text has been kept.");
+                    } else if !failures.is_empty() {
+                        self.main
+                            .status
+                            .set_text("Batch finished with errors. Completed text has been kept.");
+                        dialogs::message(
+                            &self.window,
+                            "Some audio files failed",
+                            &failures.join("\n\n"),
+                        );
+                    } else {
+                        match result {
+                            Ok(()) => self.main.status.set_text("Transcription complete."),
+                            Err(error) => {
+                                self.main.status.set_text(
+                                    "Transcription failed. Completed text has been kept.",
+                                );
+                                dialogs::message(&self.window, "Transcription failed", &error);
+                            }
                         }
                     }
                     self.refresh();
@@ -332,23 +407,31 @@ impl App {
         };
         let cancelling = session_cancelling || self.model_state.borrow().operation.cancelling();
         let has_segments = self.document.has_segments();
-        let selected_audio = self.selected_audio.borrow().clone();
+        let selected_audio = self.audio_queue.borrow().selected().cloned();
         let has_audio = selected_audio.is_some();
         self.main
             .record
             .set_label(if has_audio { "Start" } else { "Record" });
         self.main.record.set_tooltip_text(Some(if has_audio {
-            "Transcribe the selected audio file"
+            "Transcribe the selected audio files in order"
         } else {
             "Record from the microphone"
         }));
         self.main.selected_audio.set_visible(has_audio);
+        self.main.audio_expander.set_visible(has_audio);
+        self.main.audio_list.set_sensitive(!busy);
+        self.refresh_file_progress();
         if let Some(path) = selected_audio {
             let name = path
                 .file_name()
                 .unwrap_or(path.as_os_str())
                 .to_string_lossy();
-            self.main.selected_audio.set_text(&format!("Audio: {name}"));
+            let count = self.audio_queue.borrow().files.len();
+            self.main.selected_audio.set_text(&if count > 1 {
+                format!("{count} audio files · {name}")
+            } else {
+                format!("Audio: {name}")
+            });
             self.main
                 .selected_audio
                 .set_tooltip_text(Some(&path.to_string_lossy()));

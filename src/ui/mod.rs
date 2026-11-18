@@ -2,6 +2,7 @@
 //! no widget is ever sent to an audio, network, or inference thread.
 mod actions;
 mod app;
+mod audio_queue;
 mod device_controller;
 mod dialogs;
 mod export;

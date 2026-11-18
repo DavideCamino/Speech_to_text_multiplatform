@@ -89,6 +89,9 @@ pub struct MainView {
     pub open: gtk::Button,
     pub record: gtk::Button,
     pub selected_audio: gtk::Label,
+    pub audio_expander: gtk::Expander,
+    pub audio_list: gtk::ListBox,
+    pub file_progress: gtk::Label,
     pub stop: gtk::Button,
     pub cancel: gtk::Button,
     pub transcript: gtk::TextView,
@@ -155,7 +158,20 @@ impl MainView {
             .visible(false)
             .build();
         selected_audio.add_css_class("dim-label");
-        root.append(&selected_audio);
+        let audio_list = gtk::ListBox::new();
+        audio_list.set_selection_mode(gtk::SelectionMode::None);
+        let queue_scroll = gtk::ScrolledWindow::builder()
+            .child(&audio_list)
+            .max_content_height(180)
+            .propagate_natural_height(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .build();
+        let audio_expander = gtk::Expander::builder()
+            .label_widget(&selected_audio)
+            .child(&queue_scroll)
+            .visible(false)
+            .build();
+        root.append(&audio_expander);
         let transcript = text_view(true);
         let provisional = gtk::TextTag::builder()
             .name("provisional")
@@ -172,7 +188,17 @@ impl MainView {
         status.add_css_class("dim-label");
         root.append(&status);
         let progress = gtk::ProgressBar::new();
-        root.append(&progress);
+        progress.set_hexpand(true);
+        let file_progress = gtk::Label::builder()
+            .visible(false)
+            .wrap(true)
+            .max_width_chars(44)
+            .xalign(1.0)
+            .build();
+        let progress_row = gtk::Box::new(Orientation::Horizontal, 12);
+        progress_row.append(&progress);
+        progress_row.append(&file_progress);
+        root.append(&progress_row);
         let footer = gtk::Box::new(Orientation::Horizontal, 8);
         let copy = gtk::Button::with_label("Copy");
         let txt = gtk::Button::with_label("Save TXT…");
@@ -191,6 +217,9 @@ impl MainView {
             open,
             record,
             selected_audio,
+            audio_expander,
+            audio_list,
+            file_progress,
             stop,
             cancel,
             transcript,

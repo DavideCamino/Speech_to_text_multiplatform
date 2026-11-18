@@ -1,5 +1,6 @@
 //! GTK-dependent checks run through one entry point on one test thread. Keep
 //! feature helpers as ordinary functions; pure tests may still run in parallel.
+mod audio_queue;
 mod construction;
 mod devices;
 mod lifecycle;
@@ -24,6 +25,12 @@ fn settings_pages_and_menu_surfaces_build() {
     adw::init().expect("libadwaita initialization");
     // Check settings controls before frame-timing-sensitive rendering checks.
     transcription::queued_audio_controls();
+    audio_queue::queue_interactions();
+    audio_queue::sequential_batch();
+    audio_queue::batch_failures_and_cancel();
+    audio_queue::file_boundary_rendering();
+    audio_queue::single_file_time_remaining();
+    lifecycle::closing_discards_entire_audio_batch();
     unsaved::header_unsaved_indicator();
     lifecycle::empty_edits_close_without_autosave();
     lifecycle::autosave_and_recovery();

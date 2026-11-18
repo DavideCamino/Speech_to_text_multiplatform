@@ -143,9 +143,9 @@ impl App {
     fn connect_transcription_actions(self: &Rc<Self>) {
         on_click(&self.main.open, self, |app| {
             let weak = Rc::downgrade(&app);
-            dialogs::open(&app.window, false, move |path| {
+            dialogs::open_audio(&app.window, move |paths| {
                 if let Some(app) = weak.upgrade() {
-                    app.queue_audio(path);
+                    app.queue_audios(paths);
                 }
             });
         });

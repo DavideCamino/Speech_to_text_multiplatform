@@ -36,6 +36,23 @@ impl Transcript {
         }
     }
 
+    /// Start another source without adding empty subtitle cues or changing the
+    /// recovery schema. Prefix the first accepted cue's text with a file boundary.
+    pub fn append_file(&mut self, segments: Vec<Segment>) {
+        let previous = self.segments.len();
+        let existing = self
+            .segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<String>();
+        self.append(segments);
+        if !existing.trim().is_empty()
+            && let Some(first) = self.segments.get_mut(previous)
+        {
+            first.text = format!("{}{}", file_separator(&existing), first.text.trim_start());
+        }
+    }
+
     pub fn srt(&self) -> String {
         self.segments
             .iter()
@@ -53,6 +70,17 @@ impl Transcript {
     }
 }
 
+/// Only add the missing newline(s); empty sources never create separators.
+pub(crate) fn file_separator(text: &str) -> &'static str {
+    if text.trim().is_empty() || text.ends_with("\n\n") {
+        ""
+    } else if text.ends_with('\n') {
+        "\n"
+    } else {
+        "\n\n"
+    }
+}
+
 fn timestamp(ms: u64) -> String {
     format!(
         "{:02}:{:02}:{:02},{:03}",
@@ -66,6 +94,35 @@ fn timestamp(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn file_boundaries_survive_serialization_without_empty_subtitle_cues() {
+        let mut transcript = Transcript::default();
+        transcript.append_file(vec![Segment {
+            start_ms: 0,
+            end_ms: 1000,
+            text: " First.".into(),
+        }]);
+        transcript.append_file(vec![]);
+        transcript.append_file(vec![Segment {
+            start_ms: 1000,
+            end_ms: 2000,
+            text: " Second.".into(),
+        }]);
+        assert_eq!(transcript.text(), "First.\n\nSecond.");
+        assert_eq!(transcript.segments.len(), 2);
+        let srt = transcript.srt();
+        assert!(srt.contains("00:00:01,000 --> 00:00:02,000\nSecond."));
+        assert!(!srt.contains("\n\nSecond."));
+        let restored: Transcript =
+            serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
+        assert_eq!(restored.text(), transcript.text());
+        assert_eq!(file_separator(""), "");
+        assert_eq!(file_separator("   "), "");
+        assert_eq!(file_separator("First."), "\n\n");
+        assert_eq!(file_separator("First.\n"), "\n");
+        assert_eq!(file_separator("First.\n\n"), "");
+    }
+
     #[test]
     fn concatenates_raw_fragments_without_inventing_spaces() {
         for (fragments, expected) in [

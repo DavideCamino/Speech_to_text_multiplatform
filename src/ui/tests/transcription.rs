@@ -35,7 +35,7 @@ pub(super) fn queued_audio_controls() {
     assert!(!app.main.cancel.is_sensitive());
     app.queue_audio(path.clone());
     assert!(!app.busy() && !app.session.borrow().is_running());
-    assert_eq!(app.selected_audio.borrow().as_ref(), Some(&path));
+    assert_eq!(app.audio_queue.borrow().selected(), Some(&path));
     assert_eq!(app.main.record.label().as_deref(), Some("Start"));
     assert!(
         app.main
@@ -49,7 +49,7 @@ pub(super) fn queued_audio_controls() {
         .buffer()
         .set_text("Keep this transcript");
     app.main.cancel.emit_clicked();
-    assert!(app.selected_audio.borrow().is_none());
+    assert!(app.audio_queue.borrow().selected().is_none());
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
     assert!(!app.main.selected_audio.property::<bool>("visible"));
     assert!(!app.main.cancel.is_sensitive());
@@ -67,7 +67,7 @@ pub(super) fn queued_audio_controls() {
         .unwrap();
     dialog.response("cancel");
     dialog.close();
-    assert_eq!(app.selected_audio.borrow().as_ref(), Some(&path));
+    assert_eq!(app.audio_queue.borrow().selected(), Some(&path));
     assert_eq!(buffer_text(&app.main.transcript), "Keep this transcript");
     app.main.record.emit_clicked();
     let dialog = gtk::Window::list_toplevels()
@@ -95,10 +95,10 @@ pub(super) fn queued_audio_controls() {
     ));
     assert!(!app.main.open.is_sensitive() && !app.main.record.is_sensitive());
     app.queue_audio(root.path().join("ignored-while-busy.wav"));
-    assert_eq!(app.selected_audio.borrow().as_ref(), Some(&path));
+    assert_eq!(app.audio_queue.borrow().selected(), Some(&path));
     app.main.cancel.emit_clicked();
     assert!(app.session.borrow().cancelling());
-    assert!(app.selected_audio.borrow().is_none());
+    assert!(app.audio_queue.borrow().selected().is_none());
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
     // Drop the real worker (no model was configured) and test its completion UI
     // deterministically through the normal typed worker channel instead.
@@ -139,7 +139,7 @@ pub(super) fn queued_audio_controls() {
     };
     tx.send(Event::Finished(Ok(()))).unwrap();
     app.poll_transcription();
-    assert!(app.selected_audio.borrow().is_none());
+    assert!(app.audio_queue.borrow().selected().is_none());
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
     assert_eq!(buffer_text(&app.main.transcript), "Finalized words");
     app.window.destroy();

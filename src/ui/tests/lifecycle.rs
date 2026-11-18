@@ -19,6 +19,31 @@ use std::{
     time::Duration,
 };
 
+pub(super) fn closing_discards_entire_audio_batch() {
+    let app = test_app();
+    app.queue_audios(vec!["first.wav".into(), "second.wav".into()]);
+    app.audio_queue.borrow_mut().begin();
+    let (tx, events) = mpsc::sync_channel(2);
+    let cancel = Arc::new(AtomicBool::new(false));
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::File,
+        job: Job {
+            events,
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: cancel.clone(),
+        },
+    };
+    tx.send(crate::transcription::Event::Finished(Ok(())))
+        .unwrap();
+    app.begin_close();
+    app.poll_transcription();
+    assert!(cancel.load(Ordering::Relaxed));
+    assert!(!app.session.borrow().is_running());
+    assert!(app.audio_queue.borrow().files.is_empty());
+    assert!(app.audio_queue.borrow().batch.is_none());
+    app.window.destroy();
+}
+
 fn close_dialog() -> adw::MessageDialog {
     gtk::Window::list_toplevels()
         .into_iter()

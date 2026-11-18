@@ -12,6 +12,7 @@ pub(super) struct TranscriptBuffer {
     // emitted only when another finalized/provisional fragment follows it.
     trailing_whitespace: String,
     append_separator: bool,
+    file_separator: Option<String>,
 }
 
 impl TranscriptBuffer {
@@ -24,6 +25,7 @@ impl TranscriptBuffer {
             provisional: String::new(),
             trailing_whitespace: String::new(),
             append_separator: false,
+            file_separator: None,
         }
     }
 
@@ -36,6 +38,7 @@ impl TranscriptBuffer {
         self.provisional.clear();
         self.trailing_whitespace.clear();
         self.append_separator = false;
+        self.file_separator = None;
     }
 
     /// Restore edited text independently from the original subtitle timeline.
@@ -49,7 +52,18 @@ impl TranscriptBuffer {
     /// Begin another audio job after idle edits. The left-gravity mark can
     /// remain before text typed at the old end, so explicitly move it past all
     /// edited text before a provisional suffix is inserted/replaced.
+    pub fn prepare_file_append(&mut self) {
+        self.prepare_append();
+        let text = self
+            .buffer
+            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
+        self.file_separator = Some(crate::transcript::file_separator(&text).to_owned());
+        self.append_separator = false;
+        self.trailing_whitespace.clear();
+    }
+
     pub fn prepare_append(&mut self) {
+        self.file_separator = None;
         self.buffer
             .move_mark(&self.finalized_end, &self.buffer.end_iter());
         self.provisional.clear();
@@ -71,7 +85,7 @@ impl TranscriptBuffer {
         if new_segments.is_empty() && self.provisional == provisional {
             return;
         }
-        let new_text = new_segments
+        let mut new_text = new_segments
             .iter()
             .map(|s| s.text.as_str())
             .collect::<String>();
@@ -93,6 +107,11 @@ impl TranscriptBuffer {
             if !next.starts_with(char::is_whitespace) {
                 self.trailing_whitespace.push(' ');
             }
+        }
+        if !new_text.is_empty()
+            && let Some(separator) = self.file_separator.take()
+        {
+            new_text = format!("{separator}{}", new_text.trim_start());
         }
         let boundary = self.buffer.iter_at_mark(&self.finalized_end).offset();
         // GTK's selection marks have right gravity. Explicitly preserve a
@@ -135,7 +154,11 @@ impl TranscriptBuffer {
         }
         if !provisional.is_empty() {
             let mut end = self.buffer.end_iter();
-            let text = format!("{}{provisional}", self.trailing_whitespace);
+            let text = if let Some(separator) = &self.file_separator {
+                format!("{separator}{}", provisional.trim_start())
+            } else {
+                format!("{}{provisional}", self.trailing_whitespace)
+            };
             let text = if end.offset() == 0 {
                 text.trim_start()
             } else {

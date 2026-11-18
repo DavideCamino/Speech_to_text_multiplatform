@@ -35,7 +35,7 @@ pub(super) struct App {
     pub(super) settings: RefCell<Settings>,
     pub(super) document: TranscriptState,
     pub(super) session: RefCell<TranscriptionSession>,
-    pub(super) selected_audio: RefCell<Option<std::path::PathBuf>>,
+    pub(super) audio_queue: RefCell<super::audio_queue::AudioQueue>,
     pub(super) device_discovery: RefCell<Option<DeviceDiscovery>>,
 }
 
@@ -119,7 +119,7 @@ impl App {
             settings: RefCell::new(settings),
             document,
             session: RefCell::default(),
-            selected_audio: RefCell::default(),
+            audio_queue: RefCell::default(),
             device_discovery: RefCell::default(),
         })
     }
@@ -155,7 +155,9 @@ impl App {
         self.poll_rewrite();
         self.poll_devices();
         self.poll_model_scan();
+        self.audio_queue.borrow_mut().poll_metadata();
         self.poll_transcription();
+        self.refresh_file_progress();
         self.poll_model_download();
     }
 

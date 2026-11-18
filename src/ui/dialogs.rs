@@ -111,6 +111,52 @@ pub fn open(window: &impl IsA<gtk::Window>, model: bool, action: impl Fn(PathBuf
     );
 }
 
+/// Audio batches are local files, selected in one chooser operation.
+pub fn open_audio(window: &impl IsA<gtk::Window>, action: impl Fn(Vec<PathBuf>) + 'static) {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Audio files"));
+    for extension in ["wav", "mp3", "flac", "ogg", "m4a"] {
+        filter.add_pattern(&format!("*.{extension}"));
+        filter.add_pattern(&format!("*.{}", extension.to_uppercase()));
+    }
+    let all = gtk::FileFilter::new();
+    all.set_name(Some("All files"));
+    all.add_pattern("*");
+    let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    filters.append(&all);
+    let dialog = gtk::FileDialog::builder()
+        .title("Open Audio")
+        .filters(&filters)
+        .default_filter(&filter)
+        .build();
+    let parent = window.as_ref().clone();
+    dialog.open_multiple(
+        Some(window),
+        None::<&gtk::gio::Cancellable>,
+        move |result| match result {
+            Ok(files) => {
+                let paths: Option<Vec<_>> = (0..files.n_items())
+                    .map(|i| files.item(i)?.downcast::<gtk::gio::File>().ok()?.path())
+                    .collect();
+                match paths {
+                    Some(paths) if !paths.is_empty() => action(paths),
+                    Some(_) => {}
+                    None => message(
+                        &parent,
+                        "Local files required",
+                        "Select files on this computer.",
+                    ),
+                }
+            }
+            Err(error)
+                if error.matches(gtk::DialogError::Dismissed)
+                    || error.matches(gtk::DialogError::Cancelled) => {}
+            Err(error) => message(&parent, "Cannot open file chooser", &error.to_string()),
+        },
+    );
+}
+
 pub fn save(
     window: &impl IsA<gtk::Window>,
     name: &str,
