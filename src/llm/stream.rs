@@ -1,44 +1,77 @@
 use anyhow::{Result, bail, ensure};
 
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_EVENT_BYTES: usize = 1024 * 1024;
+
 /// SSE is line based, not network-chunk based. Keep bytes until a complete line
 /// arrives so split UTF-8 characters and CRLF boundaries remain intact.
 #[derive(Default)]
 pub struct Decoder {
     pending: Vec<u8>,
-    data: Vec<String>,
+    // Every data line contributes a newline, including an empty value.
+    data: String,
     pub done: bool,
 }
 impl Decoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>> {
-        self.pending.extend_from_slice(bytes);
         let mut output = Vec::new();
-        while let Some(end) = self.pending.iter().position(|b| *b == b'\n') {
-            let line: Vec<_> = self.pending.drain(..=end).collect();
-            let line = std::str::from_utf8(&line)?.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                self.dispatch(&mut output)?;
-            } else if let Some(data) = line.strip_prefix("data:") {
-                self.data
-                    .push(data.strip_prefix(' ').unwrap_or(data).to_owned());
+        for fragment in bytes.split_inclusive(|&byte| byte == b'\n') {
+            if self.done {
+                break;
             }
+            let line = fragment.strip_suffix(b"\n");
+            let length = line.unwrap_or(fragment).len();
             ensure!(
-                self.data.iter().map(String::len).sum::<usize>() < 1024 * 1024,
-                "SSE event too large"
+                self.pending.len().saturating_add(length) < MAX_LINE_BYTES,
+                "SSE line too large"
             );
+            let Some(line) = line else {
+                self.pending.extend_from_slice(fragment);
+                break;
+            };
+            if self.pending.is_empty() {
+                self.read_line(line, &mut output)?;
+            } else {
+                let mut pending = std::mem::take(&mut self.pending);
+                pending.extend_from_slice(line);
+                self.read_line(&pending, &mut output)?;
+                pending.clear();
+                self.pending = pending;
+            }
         }
-        ensure!(self.pending.len() < 1024 * 1024, "SSE line too large");
         Ok(output)
     }
-    fn dispatch(&mut self, output: &mut Vec<String>) -> Result<()> {
-        if self.data.is_empty() || self.done {
-            return Ok(());
+
+    fn read_line(&mut self, line: &[u8], output: &mut Vec<String>) -> Result<()> {
+        let line = std::str::from_utf8(line)?.trim_end_matches('\r');
+        if line.is_empty() {
+            self.dispatch(output)?;
+        } else if let Some(data) = line.strip_prefix("data:") {
+            let data = data.strip_prefix(' ').unwrap_or(data);
+            // Leave room for the delimiter, even when the data value is empty.
+            ensure!(
+                self.data.len().saturating_add(data.len()) < MAX_EVENT_BYTES,
+                "SSE event too large"
+            );
+            self.data.push_str(data);
+            self.data.push('\n');
         }
-        let data = std::mem::take(&mut self.data).join("\n");
+        Ok(())
+    }
+
+    fn dispatch(&mut self, output: &mut Vec<String>) -> Result<()> {
+        // Strip only the final delimiter; the preceding ones join data fields.
+        let Some(data) = self.data.strip_suffix('\n') else {
+            return Ok(());
+        };
         if data == "[DONE]" {
+            self.data.clear();
             self.done = true;
             return Ok(());
         }
-        let value: serde_json::Value = serde_json::from_str(&data)?;
+        let parsed = serde_json::from_str(data);
+        self.data.clear();
+        let value: serde_json::Value = parsed?;
         // Never surface arbitrary response bodies: they can echo private inputs.
         if value.get("error").is_some() {
             bail!("Server reported a generation error");
@@ -81,6 +114,55 @@ mod tests {
             assert_eq!(text, "héllo");
         }
     }
+    #[test]
+    fn empty_data_lines_count_toward_the_event_limit() {
+        let mut decoder = Decoder::default();
+        let lines = b"data:\n".repeat(4096);
+        for _ in 0..MAX_EVENT_BYTES / 4096 {
+            assert!(decoder.push(&lines).unwrap().is_empty());
+        }
+        assert_eq!(decoder.data.len(), MAX_EVENT_BYTES);
+        let error = decoder.push(b"data:\n").unwrap_err();
+        assert_eq!(error.to_string(), "SSE event too large");
+        assert_eq!(decoder.data.len(), MAX_EVENT_BYTES);
+    }
+
+    #[test]
+    fn line_limit_applies_before_buffering_with_or_without_newline() {
+        let mut wire = vec![b'x'; MAX_LINE_BYTES];
+        wire[0] = b':'; // Even ignored comment lines must respect the limit.
+        wire.push(b'\n');
+        for suffix in [&wire[..], &wire[..MAX_LINE_BYTES]] {
+            let error = Decoder::default().push(suffix).unwrap_err();
+            assert_eq!(error.to_string(), "SSE line too large");
+        }
+        let mut decoder = Decoder::default();
+        let split = MAX_LINE_BYTES - 1;
+        assert!(decoder.push(&wire[..split]).unwrap().is_empty());
+        assert_eq!(
+            decoder.push(&wire[split..]).unwrap_err().to_string(),
+            "SSE line too large"
+        );
+        assert_eq!(decoder.pending.len(), split);
+    }
+
+    #[test]
+    fn multiline_events_join_and_reset_between_dispatches() {
+        let mut decoder = Decoder::default();
+        let text = decoder.push(b"data:\r\ndata: {\"choices\":\r\ndata: [{\"delta\":{\"content\":\"first\"}}]}\r\n\r\n").unwrap();
+        assert_eq!(text, ["first"]);
+        assert!(decoder.data.is_empty());
+        assert!(
+            decoder
+                .push(b"data: {\"usage\":{}}\n\n")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(decoder.data.is_empty());
+        assert!(decoder.push(b"data: [DONE]\n\n").unwrap().is_empty());
+        assert!(decoder.done);
+    }
+
     #[test]
     fn truncated_and_invalid_streams_fail() {
         assert!(Decoder::default().finish().is_err());
