@@ -28,6 +28,7 @@ fn settings_pages_and_menu_surfaces_build() {
     audio_queue::queue_interactions();
     audio_queue::sequential_batch();
     audio_queue::batch_failures_and_cancel();
+    audio_queue::incomplete_batch_warns_only_after_final_file();
     audio_queue::file_boundary_rendering();
     audio_queue::single_file_time_remaining();
     lifecycle::closing_discards_entire_audio_batch();

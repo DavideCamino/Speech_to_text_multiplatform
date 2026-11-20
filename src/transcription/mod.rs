@@ -4,7 +4,7 @@ mod gpu;
 mod overlap;
 mod worker;
 pub use gpu::{GpuBackend, compiled_gpu_backends};
-pub use worker::{Event, Job, Source, start};
+pub use worker::{Completion, Event, Job, Source, start};
 
 /// Compiled backends, not a runtime probe of installed GPUs or drivers.
 pub fn gpu_backends_in_build() -> Vec<&'static str> {

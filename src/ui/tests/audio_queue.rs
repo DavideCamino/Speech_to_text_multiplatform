@@ -2,7 +2,7 @@
 use super::support::test_app;
 use crate::{
     transcript::Segment,
-    transcription::{Event, Job, Source},
+    transcription::{Completion, Event, Job, Source},
     ui::{
         app::App,
         model_controller::ModelAvailability,
@@ -161,7 +161,7 @@ pub(super) fn sequential_batch() {
     assert_eq!(app.main.progress.fraction(), 0.5);
     assert!(app.main.file_progress.text().contains("remaining"));
     assert!(!app.main.file_progress.text().contains("Calculating"));
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert_eq!(app.audio_queue.borrow().batch.as_ref().unwrap().index, 1);
     assert!(app.main.file_progress.text().starts_with("File 2 of 3"));
@@ -176,7 +176,7 @@ pub(super) fn sequential_batch() {
             )
     );
     let tx = fake_job(&app);
-    tx.send(Event::Finished(Ok(()))).unwrap(); // empty file adds no separator
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap(); // empty file adds no separator
     app.poll_transcription();
     assert_eq!(buffer_text(&app.main.transcript), "Existing text. One.");
     assert!(app.main.file_progress.text().starts_with("File 3 of 3"));
@@ -193,7 +193,7 @@ pub(super) fn sequential_batch() {
         text: " Three.".into(),
     }]))
     .unwrap();
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert_eq!(
         buffer_text(&app.main.transcript),
@@ -246,7 +246,7 @@ pub(super) fn batch_failures_and_cancel() {
         1
     );
     let tx = fake_job(&app);
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     let tx = fake_job(&app);
     tx.send(Event::Final(vec![Segment {
@@ -255,7 +255,7 @@ pub(super) fn batch_failures_and_cancel() {
         text: "Next.".into(),
     }]))
     .unwrap();
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert_eq!(buffer_text(&app.main.transcript), "Kept.\n\nNext.");
     assert!(app.main.status.text().contains("errors"));
@@ -280,12 +280,79 @@ pub(super) fn batch_failures_and_cancel() {
     tx.send(Event::Provisional(" unfinished".into())).unwrap();
     app.poll_transcription();
     app.request_cancel();
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::IncompleteFile)))
+        .unwrap();
     app.poll_transcription();
+    assert!(batch_dialogs(&app).is_empty());
     assert_eq!(buffer_text(&app.main.transcript), "Finalized.");
     assert!(!app.session.borrow().is_running());
     assert!(app.audio_queue.borrow().files.is_empty());
     assert!(paths.iter().all(|path| path.exists()));
+    app.window.destroy();
+}
+
+fn batch_dialogs(app: &App) -> Vec<adw::MessageDialog> {
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .filter(|dialog| {
+            dialog.is_visible() && dialog.transient_for().as_ref() == Some(app.window.upcast_ref())
+        })
+        .collect()
+}
+
+pub(super) fn incomplete_batch_warns_only_after_final_file() {
+    let app = ready();
+    let paths = [
+        "clipped-one.wav",
+        "broken.wav",
+        "clipped-two.wav",
+        "complete.wav",
+    ]
+    .map(std::path::PathBuf::from);
+    app.queue_audios(paths.to_vec());
+    app.start(Source::File(paths[0].clone()), false);
+    for (i, (result, text)) in [
+        (Ok(Completion::IncompleteFile), "First readable part."),
+        (Err("decode failed".into()), ""),
+        (Ok(Completion::IncompleteFile), "Second readable part."),
+        (Ok(Completion::Complete), "Complete file."),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(app.audio_queue.borrow().selected(), Some(&paths[i]));
+        let tx = fake_job(&app);
+        if !text.is_empty() {
+            let start_ms = app.document.end_ms();
+            tx.send(Event::Final(vec![Segment {
+                start_ms,
+                end_ms: start_ms + 1000,
+                text: text.into(),
+            }]))
+            .unwrap();
+        }
+        tx.send(Event::Finished(result)).unwrap();
+        app.poll_transcription();
+        if i + 1 < paths.len() {
+            assert!(batch_dialogs(&app).is_empty());
+        }
+    }
+    let dialogs = batch_dialogs(&app);
+    assert_eq!(dialogs.len(), 1);
+    let warning = &dialogs[0];
+    assert_eq!(warning.heading().as_deref(), Some("Incomplete audio files"));
+    let body = warning.body();
+    assert!(body.contains("clipped-one.wav") && body.contains("clipped-two.wav"));
+    assert!(body.contains("broken.wav: decode failed"));
+    assert!(!body.contains("complete.wav"));
+    assert_eq!(
+        buffer_text(&app.main.transcript),
+        "First readable part.\n\nSecond readable part.\n\nComplete file."
+    );
+    assert!(app.audio_queue.borrow().files.is_empty());
+    assert!(!app.session.borrow().is_running());
+    warning.close();
     app.window.destroy();
 }
 

@@ -2,7 +2,7 @@
 use super::support::{test_app, wait_for_background};
 use crate::{
     settings,
-    transcription::Job,
+    transcription::{Completion, Event, Job},
     ui::{
         lifecycle::WindowLifecycle,
         rewrite::RewriteOperation,
@@ -33,8 +33,7 @@ pub(super) fn closing_discards_entire_audio_batch() {
             cancel: cancel.clone(),
         },
     };
-    tx.send(crate::transcription::Event::Finished(Ok(())))
-        .unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.begin_close();
     app.poll_transcription();
     assert!(cancel.load(Ordering::Relaxed));

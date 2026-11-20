@@ -2,7 +2,7 @@
 use super::support::test_app;
 use crate::{
     settings::Settings,
-    transcription::{Event, Job},
+    transcription::{Completion, Event, Job},
     ui::{
         preferences,
         transcription_controller::{SessionSource, TranscriptionSession},
@@ -282,7 +282,7 @@ pub(super) fn recognition_context_controls() {
         !app.main.context.is_editable(),
         "shutdown must finish before editing resumes"
     );
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll();
     assert!(app.main.context.is_editable());
     assert!(app.main.context.is_cursor_visible());

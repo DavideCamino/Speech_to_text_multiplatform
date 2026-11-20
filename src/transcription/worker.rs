@@ -23,6 +23,12 @@ pub enum Source {
     Microphone,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Completion {
+    Complete,
+    IncompleteFile,
+}
+
 #[derive(Debug)]
 pub enum Event {
     Status(String),
@@ -30,7 +36,7 @@ pub enum Event {
     Final(Vec<Segment>),
     Provisional(String),
     Meter { seconds: f64, level: f64 },
-    Finished(Result<(), String>),
+    Finished(Result<Completion, String>),
 }
 
 pub struct Job {
@@ -58,32 +64,34 @@ pub fn start(source: Source, settings: Settings, offset_ms: u64, context: String
     };
     std::thread::spawn(move || {
         // A panic must still unlock the interface, not leave it in a busy state.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-            let stopped_before_capture =
-                || matches!(source, Source::Microphone) && stop.load(Ordering::Relaxed);
-            if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
-                return Ok(());
-            }
-            send(
-                &tx,
-                Event::Status(
-                    "Loading model… cancellation waits for model loading to finish".into(),
-                ),
-            );
-            let engine = Engine::new(&settings, &context, cancel.clone());
-            if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
-                return Ok(());
-            }
-            let mut engine = engine?;
-            match source {
-                Source::File(path) => file(&mut engine, path, offset_ms, &tx, &cancel),
-                Source::Microphone => {
-                    microphone(&mut engine, &settings, offset_ms, &tx, &cancel, &stop)
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Completion> {
+                let stopped_before_capture =
+                    || matches!(source, Source::Microphone) && stop.load(Ordering::Relaxed);
+                if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
+                    return Ok(Completion::Complete);
                 }
-            }
-        }));
+                send(
+                    &tx,
+                    Event::Status(
+                        "Loading model… cancellation waits for model loading to finish".into(),
+                    ),
+                );
+                let engine = Engine::new(&settings, &context, cancel.clone());
+                if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
+                    return Ok(Completion::Complete);
+                }
+                let mut engine = engine?;
+                match source {
+                    Source::File(path) => file(&mut engine, path, offset_ms, &tx, &cancel),
+                    Source::Microphone => {
+                        microphone(&mut engine, &settings, offset_ms, &tx, &cancel, &stop)
+                            .map(|()| Completion::Complete)
+                    }
+                }
+            }));
         let result = match outcome {
-            Ok(_) if cancel.load(Ordering::Relaxed) => Ok(()),
+            Ok(_) if cancel.load(Ordering::Relaxed) => Ok(Completion::Complete),
             Ok(result) => result.map_err(|e| format!("{e:#}")),
             Err(_) => Err("The transcription worker stopped unexpectedly".into()),
         };
@@ -103,7 +111,7 @@ fn file(
     offset: u64,
     tx: &SyncSender<Event>,
     cancel: &AtomicBool,
-) -> Result<()> {
+) -> Result<Completion> {
     file_windows(path, offset, tx, cancel, |samples, at| {
         engine.transcribe(samples, at)
     })
@@ -115,7 +123,7 @@ fn file_windows(
     tx: &SyncSender<Event>,
     cancel: &AtomicBool,
     mut transcribe: impl FnMut(&[f32], u64) -> Result<Vec<Segment>>,
-) -> Result<()> {
+) -> Result<Completion> {
     let mut audio = AudioFile::open(&path)?;
     let mut pending = Vec::new();
     let mut processed = 0_usize;
@@ -125,7 +133,7 @@ fn file_windows(
     send(tx, Event::Status("Transcribing audio file…".into()));
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Ok(());
+            return Ok(Completion::Complete);
         }
         let packet = audio.next_samples()?;
         let end = packet.is_none();
@@ -142,7 +150,7 @@ fn file_windows(
             let until = at + count as u64 * 1000 / SAMPLE_RATE as u64;
             let (segments, _) = reconciler.update(words, at, until, last_window);
             if cancel.load(Ordering::Relaxed) {
-                return Ok(());
+                return Ok(Completion::Complete);
             }
             send(tx, Event::Final(segments));
             let advance = if last_window { count } else { count - overlap };
@@ -159,8 +167,14 @@ fn file_windows(
             break;
         }
     }
-    send(tx, Event::Progress(1.0));
-    Ok(())
+    // Decoder EOF still drains the resampler and final recognition window.
+    // Only report the incomplete outcome after publishing all readable text.
+    if audio.ended_early() {
+        Ok(Completion::IncompleteFile)
+    } else {
+        send(tx, Event::Progress(1.0));
+        Ok(Completion::Complete)
+    }
 }
 
 fn microphone(
@@ -464,13 +478,48 @@ mod tests {
     }
 
     #[test]
+    fn truncated_file_finalizes_readable_audio_without_reporting_full_progress() {
+        let audio = silence(2_000);
+        audio
+            .as_file()
+            .set_len(44 + (SAMPLE_RATE * 2) as u64)
+            .unwrap();
+        let (tx, rx) = mpsc::sync_channel(128);
+        let result = file_windows(
+            audio.path().into(),
+            0,
+            &tx,
+            &AtomicBool::new(false),
+            |samples, at| {
+                assert_eq!(samples.len(), SAMPLE_RATE);
+                Ok(vec![Segment {
+                    start_ms: at + 500,
+                    end_ms: at + 1000,
+                    text: "kept at EOF".into(),
+                }])
+            },
+        )
+        .unwrap();
+        assert_eq!(result, Completion::IncompleteFile);
+        let mut transcript = Transcript::default();
+        for event in rx.try_iter() {
+            match event {
+                Event::Final(segments) => transcript.append(segments),
+                Event::Progress(fraction) => assert!(fraction < 1.0),
+                _ => {}
+            }
+        }
+        assert_eq!(transcript.text(), "kept at EOF");
+    }
+
+    #[test]
     fn file_lookahead_and_overlap_preserve_all_words_including_exact_eof() {
         for duration in [500, 28_000, 28_500, 52_000, 56_000] {
             let audio = silence(duration);
             let offset = 7_000;
             let (tx, rx) = mpsc::sync_channel(128);
             let mut calls = Vec::new();
-            file_windows(
+            let result = file_windows(
                 audio.path().into(),
                 offset,
                 &tx,
@@ -492,6 +541,7 @@ mod tests {
                 },
             )
             .unwrap();
+            assert_eq!(result, Completion::Complete);
             let mut transcript = Transcript::default();
             for event in rx.try_iter() {
                 if let Event::Final(segments) = event {

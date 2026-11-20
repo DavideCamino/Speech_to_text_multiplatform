@@ -47,6 +47,33 @@ fn decodes_stereo_wav_incrementally_into_16khz_mono() {
     assert!(samples.iter().all(|s| s.is_finite() && s.abs() < 1.0));
     assert!(samples.iter().any(|s| s.abs() > 0.4));
     assert!(audio.next_samples().unwrap().is_none());
+    assert!(!audio.ended_early());
+}
+
+#[test]
+fn truncated_pcm_wav_keeps_all_complete_frames_and_reports_early_end() {
+    let root = tempfile::tempdir().unwrap();
+    // Test content detection, not the filename extension. Cut mid-packet and
+    // mid-frame while leaving the original declared size intact.
+    let path = root.path().join("recording.dat");
+    let file = wav(16_000, 1, 32_000);
+    std::fs::copy(file.path(), &path).unwrap();
+    let readable_frames = 16_031;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(44 + readable_frames * 2 + 1)
+        .unwrap();
+    let mut audio = AudioFile::open(&path).unwrap();
+    assert_eq!(audio.duration_seconds, Some(2.0));
+    assert!(!audio.ended_early());
+    let mut samples = 0;
+    while let Some(packet) = audio.next_samples().unwrap() {
+        samples += packet.len();
+    }
+    assert_eq!(samples as u64, readable_frames);
+    assert!(audio.ended_early());
 }
 
 #[test]

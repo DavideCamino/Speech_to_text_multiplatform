@@ -1,4 +1,5 @@
 //! Ordered file jobs, duration-based remaining time, and queue controls.
+use crate::transcription::Completion;
 use std::{path::PathBuf, sync::mpsc::Receiver, time::Instant};
 
 #[derive(Debug)]
@@ -13,6 +14,7 @@ pub(super) struct Batch {
     completed_fractions: Vec<f64>,
     pub fraction: f64,
     pub failures: Vec<String>,
+    pub incomplete: Vec<PathBuf>,
 }
 
 type Durations = Vec<(PathBuf, Option<f64>)>;
@@ -95,16 +97,19 @@ impl AudioQueue {
             completed_fractions: vec![],
             fraction: 0.0,
             failures: vec![],
+            incomplete: vec![],
         });
     }
 
-    pub fn advance(&mut self, error: Option<&str>) -> Option<PathBuf> {
+    pub fn advance(&mut self, result: &Result<Completion, String>) -> Option<PathBuf> {
         let batch = self.batch.as_mut()?;
         let file = self.files.get(batch.index)?;
-        if let Some(error) = error {
-            batch
+        match result {
+            Ok(Completion::Complete) => batch.fraction = 1.0,
+            Ok(Completion::IncompleteFile) => batch.incomplete.push(file.path.clone()),
+            Err(error) => batch
                 .failures
-                .push(format!("{}: {error}", file.path.display()));
+                .push(format!("{}: {error}", file.path.display())),
         }
         batch.completed_fractions.push(batch.fraction);
         batch.index += 1;
@@ -394,7 +399,10 @@ mod tests {
         q.begin();
         q.batch.as_mut().unwrap().fraction = 1.0;
         assert!(q.remaining_seconds().is_none());
-        assert_eq!(q.advance(None), Some(PathBuf::from("b.wav")));
+        assert_eq!(
+            q.advance(&Ok(Completion::Complete)),
+            Some(PathBuf::from("b.wav"))
+        );
         q.files[0].duration = Some(60.0);
         q.batch.as_mut().unwrap().started = Instant::now() - Duration::from_secs(10);
         assert!((q.remaining_seconds().unwrap() - 50.0).abs() < 0.1);
@@ -410,15 +418,22 @@ mod tests {
         let mut q = queue();
         q.begin();
         q.batch.as_mut().unwrap().fraction = 0.5;
-        assert_eq!(q.advance(Some("decode failed")), Some("b.wav".into()));
+        assert_eq!(
+            q.advance(&Err("decode failed".into())),
+            Some("b.wav".into())
+        );
         let b = q.batch.as_ref().unwrap();
         assert_eq!(b.index, 1);
         assert_eq!(b.completed_fractions, [0.5]);
         assert_eq!(b.fraction, 0.0);
         assert!(b.failures[0].contains("a.wav: decode failed"));
-        q.advance(None);
-        assert!(q.advance(None).is_none());
-        assert!(q.advance(None).is_none());
+        q.advance(&Ok(Completion::IncompleteFile));
+        assert_eq!(
+            q.batch.as_ref().unwrap().incomplete,
+            [PathBuf::from("b.wav")]
+        );
+        assert!(q.advance(&Ok(Completion::Complete)).is_none());
+        assert!(q.advance(&Ok(Completion::Complete)).is_none());
     }
 
     #[test]

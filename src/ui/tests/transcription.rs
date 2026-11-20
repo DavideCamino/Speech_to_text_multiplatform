@@ -2,7 +2,7 @@
 use super::support::test_app;
 use crate::{
     transcript::Transcript,
-    transcription::{Event, Job, Source},
+    transcription::{Completion, Event, Job, Source},
     ui::{
         export::ExportKind,
         text_zoom, transcript_buffer,
@@ -119,7 +119,7 @@ pub(super) fn queued_audio_controls() {
         text: "Finalized words".into(),
     }]))
     .unwrap();
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert!(!app.session.borrow().is_running());
     assert_eq!(buffer_text(&app.main.transcript), "Finalized words");
@@ -137,7 +137,7 @@ pub(super) fn queued_audio_controls() {
             cancel: Arc::new(AtomicBool::new(false)),
         },
     };
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert!(app.audio_queue.borrow().selected().is_none());
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
@@ -241,7 +241,7 @@ pub(super) fn editable_transcript() {
     }]))
     .unwrap();
     tx.send(Event::Provisional(String::new())).unwrap();
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll();
     assert!(app.main.transcript.is_editable());
     assert_eq!(
@@ -394,7 +394,7 @@ pub(super) fn transcription_session_controls() {
         assert!(!app.main.transcript.is_editable());
         assert!(app.session.borrow().is_running());
     }
-    tx.send(Event::Finished(Ok(()))).unwrap();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert!(!app.session.borrow().is_running());
     assert!(app.main.transcript.is_editable());

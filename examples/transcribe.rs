@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use speech2text::{
     settings::Settings,
     transcript::Transcript,
-    transcription::{self, Event, GpuBackend, Source},
+    transcription::{self, Completion, Event, GpuBackend, Source},
 };
 
 fn main() -> Result<()> {
@@ -45,7 +45,11 @@ fn main() -> Result<()> {
         match job.events.recv()? {
             Event::Status(text) => eprintln!("{text}"),
             Event::Final(segments) => transcript.append(segments),
-            Event::Finished(Ok(())) => break,
+            Event::Finished(Ok(Completion::Complete)) => break,
+            Event::Finished(Ok(Completion::IncompleteFile)) => {
+                eprintln!("Warning: audio ended early; only the readable portion was transcribed.");
+                break;
+            }
             Event::Finished(Err(error)) => bail!(error),
             _ => {}
         }
