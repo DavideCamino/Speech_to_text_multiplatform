@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::{
-    io::Write,
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
 };
@@ -54,13 +54,37 @@ pub fn model_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("models"))
 }
 
+pub(crate) const FILE_NAME: &str = "settings.json";
+
+// A parse failure means we read the file and can try to move it aside. An I/O
+// failure can be temporary; leave the original where it is in that case.
+enum ReadSettings {
+    Loaded(Settings),
+    Missing,
+    Invalid,
+    ReadError(io::Error),
+}
+
+fn read_settings(path: &Path) -> ReadSettings {
+    match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(settings) => ReadSettings::Loaded(settings),
+            // Parser details can include private prompt text or other values.
+            Err(_) => ReadSettings::Invalid,
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => ReadSettings::Missing,
+        Err(error) => ReadSettings::ReadError(error),
+    }
+}
+
 impl Settings {
     pub fn load() -> Result<Self> {
-        let path = dirs()?.config_dir().join("settings.json");
-        if !path.exists() {
-            return Ok(Self::default());
+        match read_settings(&dirs()?.config_dir().join(FILE_NAME)) {
+            ReadSettings::Loaded(settings) => Ok(settings),
+            ReadSettings::Missing => Ok(Self::default()),
+            ReadSettings::Invalid => anyhow::bail!("Invalid preferences JSON"),
+            ReadSettings::ReadError(error) => Err(error).context("Cannot read preferences"),
         }
-        serde_json::from_slice(&std::fs::read(path)?).context("Cannot read preferences")
     }
 
     pub fn save(&self) -> Result<()> {
@@ -68,6 +92,10 @@ impl Settings {
     }
 
     fn save_in(&self, directory: &Path) -> Result<()> {
+        self.write_in(directory, true)
+    }
+
+    fn write_in(&self, directory: &Path, may_replace: bool) -> Result<()> {
         // Serialize before touching the filesystem. User prompts are stored as
         // plain text; transcripts/results, audio, and auth tokens are not saved
         // in preferences. Explicit session recovery uses a separate file.
@@ -88,11 +116,111 @@ impl Settings {
             .as_file()
             .sync_all()
             .context("Cannot flush preferences")?;
-        temporary
-            .persist(directory.join("settings.json"))
-            .map_err(|error| error.error)
-            .context("Cannot replace preferences")?;
+        let path = directory.join(FILE_NAME);
+        if may_replace {
+            temporary
+                .persist(&path)
+                .map_err(|error| error.error)
+                .context("Cannot replace preferences")?;
+        } else {
+            temporary.persist_noclobber(&path).map_err(|error| {
+                if error.error.kind() == ErrorKind::AlreadyExists {
+                    anyhow::anyhow!(
+                        "Preferences at {} were not overwritten. Move the file aside before retrying.",
+                        path.display()
+                    )
+                } else {
+                    anyhow::Error::new(error.error).context("Cannot create preferences without overwriting an existing file")
+                }
+            })?;
+        }
         Ok(())
+    }
+}
+
+/// Startup settings and the write policy derived from inspecting the same path.
+pub(crate) struct StartupSettings {
+    settings: Settings,
+    warning: Option<String>,
+    directory: Option<PathBuf>,
+    may_replace: bool,
+}
+
+impl StartupSettings {
+    pub(crate) fn load() -> Self {
+        match dirs() {
+            Ok(dirs) => Self::load_in(dirs.config_dir()),
+            Err(error) => Self::unavailable(format!("{error:#}")),
+        }
+    }
+
+    pub(crate) fn unavailable(error: String) -> Self {
+        Self {
+            settings: Settings::default(),
+            warning: Some(error),
+            directory: None,
+            may_replace: false,
+        }
+    }
+
+    pub(crate) fn load_in(directory: &Path) -> Self {
+        Self::load_with_quarantine(directory, |path| {
+            crate::storage::quarantine(path, "settings-unreadable-")
+        })
+    }
+
+    fn load_with_quarantine(
+        directory: &Path,
+        quarantine: impl FnOnce(&Path) -> Result<PathBuf>,
+    ) -> Self {
+        let path = directory.join(FILE_NAME);
+        let mut startup = Self {
+            settings: Settings::default(),
+            warning: None,
+            directory: Some(directory.to_owned()),
+            may_replace: false,
+        };
+        match read_settings(&path) {
+            ReadSettings::Loaded(settings) => {
+                startup.settings = settings;
+                startup.may_replace = true;
+            }
+            ReadSettings::Missing => {}
+            ReadSettings::Invalid => {
+                startup.warning = Some(match quarantine(&path) {
+                    Ok(backup) => format!(
+                        "Preferences were not valid and were moved to {}. The app is using defaults.",
+                        backup.display()
+                    ),
+                    Err(error) => format!(
+                        "Preferences at {} were not valid and could not be moved aside: {error:#}. The app is using defaults and will not overwrite the original file.",
+                        path.display()
+                    ),
+                });
+            }
+            ReadSettings::ReadError(error) => {
+                startup.warning = Some(format!(
+                    "Could not read preferences at {}: {error}. The app is using defaults and will not overwrite the original file.",
+                    path.display()
+                ));
+            }
+        }
+        startup
+    }
+
+    pub(crate) fn into_parts(self) -> (Settings, SaveWorker, Option<String>) {
+        let directory = self.directory;
+        let mut may_replace = self.may_replace;
+        let writer = SaveWorker::with_save(move |settings| {
+            let directory = directory.as_deref().context(
+                "Preferences location was not verified at startup; restart before saving",
+            )?;
+            settings.write_in(directory, may_replace)?;
+            // Only a successful publication permits subsequent replacement.
+            may_replace = true;
+            Ok(())
+        });
+        (self.settings, writer, self.warning)
     }
 }
 
@@ -106,10 +234,6 @@ pub(crate) struct SaveWorker {
 }
 
 impl SaveWorker {
-    pub fn new() -> Self {
-        Self::with_save(|settings| settings.save())
-    }
-
     pub(crate) fn with_save(mut save: impl FnMut(Settings) -> Result<()> + Send + 'static) -> Self {
         let (requests, incoming) = mpsc::channel::<(u64, Settings)>();
         let (finished, results) = mpsc::channel();
@@ -279,6 +403,97 @@ mod tests {
                 .unwrap_err()
                 .contains("stopped unexpectedly")
         );
+    }
+
+    fn submit_and_wait(worker: &mut SaveWorker, settings: Settings) -> Result<(), String> {
+        use std::time::{Duration, Instant};
+        worker.submit(settings)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = worker.poll() {
+                return result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for preferences"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn failed_backup_keeps_original_and_requires_a_successful_first_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(FILE_NAME);
+        let original = b"{\"whisper_context\": \"private unfinished prompt\"";
+        std::fs::write(&path, original).unwrap();
+        let (mut defaults, mut writer, warning) =
+            StartupSettings::load_with_quarantine(root.path(), |path| {
+                assert_eq!(std::fs::read(path).unwrap(), original);
+                anyhow::bail!("simulated backup failure");
+            })
+            .into_parts();
+        let warning = warning.unwrap();
+        assert!(warning.contains("simulated backup failure"));
+        assert!(!warning.contains("private unfinished prompt"));
+        for _ in 0..2 {
+            let error = submit_and_wait(&mut writer, defaults.clone()).unwrap_err();
+            assert!(error.contains("not overwritten"));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+
+        let manual_backup = root.path().join("manual-backup.json");
+        std::fs::rename(&path, &manual_backup).unwrap();
+        submit_and_wait(&mut writer, defaults.clone()).unwrap();
+        defaults.whisper_context = "New prompt".into();
+        submit_and_wait(&mut writer, defaults).unwrap();
+        let ReadSettings::Loaded(saved) = read_settings(&path) else {
+            panic!("expected new settings");
+        };
+        assert_eq!(saved.whisper_context, "New prompt");
+        assert_eq!(std::fs::read(&manual_backup).unwrap(), original);
+    }
+
+    #[test]
+    fn unreadable_path_is_not_moved_on_io_error() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(FILE_NAME);
+        std::fs::create_dir(&path).unwrap();
+        let (_, mut writer, warning) = StartupSettings::load_with_quarantine(root.path(), |_| {
+            panic!("must not quarantine on a read error");
+        })
+        .into_parts();
+        assert!(warning.unwrap().contains("Could not read preferences"));
+        assert!(submit_and_wait(&mut writer, Settings::default()).is_err());
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn missing_preferences_do_not_authorize_replacing_a_new_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(FILE_NAME);
+        let (defaults, mut writer, warning) = StartupSettings::load_in(root.path()).into_parts();
+        assert!(warning.is_none());
+        let existing = br#"{"language":"en"}"#;
+        std::fs::write(&path, existing).unwrap();
+        assert!(submit_and_wait(&mut writer, defaults).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), existing);
+    }
+
+    #[test]
+    fn loaded_preferences_can_be_replaced_on_the_first_save() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(FILE_NAME);
+        std::fs::write(&path, br#"{"language":"en"}"#).unwrap();
+        let (mut loaded, mut writer, warning) = StartupSettings::load_in(root.path()).into_parts();
+        assert!(warning.is_none());
+        assert_eq!(loaded.language.as_deref(), Some("en"));
+        loaded.language = Some("it".into());
+        submit_and_wait(&mut writer, loaded).unwrap();
+        let ReadSettings::Loaded(saved) = read_settings(&path) else {
+            panic!("expected updated preferences");
+        };
+        assert_eq!(saved.language.as_deref(), Some("it"));
     }
 
     #[test]

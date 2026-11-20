@@ -116,7 +116,7 @@ fn write_snapshot(path: &Path, snapshot: &Snapshot, replace: bool) -> Result<()>
 pub(crate) fn load_at_startup(path: &Path) -> Result<Option<Snapshot>> {
     match load(path) {
         Ok(snapshot) => Ok(snapshot),
-        Err(error) => match quarantine(path) {
+        Err(error) => match crate::storage::quarantine(path, "recovery-unreadable-") {
             Ok(backup) => Err(anyhow::anyhow!(
                 "{error:#}\n\nThe recovery file was moved to {}. It will not be overwritten by a new autosave.",
                 backup.display()
@@ -126,24 +126,6 @@ pub(crate) fn load_at_startup(path: &Path) -> Result<Option<Snapshot>> {
             )),
         },
     }
-}
-
-fn quarantine(path: &Path) -> Result<std::path::PathBuf> {
-    ensure!(
-        std::fs::symlink_metadata(path)?.is_file(),
-        "Recovery path is not a regular file"
-    );
-    let directory = path
-        .parent()
-        .context("Recovery file has no parent directory")?;
-    // A unique directory in the same parent gives the rename a fresh destination
-    // on the same filesystem without replacing any previous backup.
-    let backup_dir = tempfile::Builder::new()
-        .prefix("recovery-unreadable-")
-        .tempdir_in(directory)?;
-    let backup = backup_dir.path().join(FILE_NAME);
-    std::fs::rename(path, &backup)?;
-    Ok(backup_dir.keep().join(FILE_NAME))
 }
 
 /// Reading never consumes the file. Delete only after the UI has restored it.

@@ -93,6 +93,8 @@ Default locations:
 
 Native Linux paths respect `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Models selected with **Use Original** stay at their original location. Exports go to your selected destination.
 
+If `settings.json` contains invalid preferences, the app starts with defaults and shows the path of the backup in a sibling `settings-unreadable-*` directory. If the file can't be read or backed up, the app leaves it untouched and won't save over it. These backups can contain unencrypted prompts.
+
 Choosing **Autosave & Close** stores `recovery.json` in the data folder (alongside the `models` directory):
 
 - Linux Flatpak: `~/.var/app/io.github.davidecamino.Speech2Text/data/speech2text/recovery.json`

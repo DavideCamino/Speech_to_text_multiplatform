@@ -28,7 +28,7 @@ mod views;
 mod tests;
 
 use self::{app::App, task::background};
-use crate::settings::{self, Settings};
+use crate::settings::{self, StartupSettings};
 use adw::prelude::*;
 use std::{sync::mpsc, time::Duration};
 
@@ -58,7 +58,7 @@ pub fn build(application: &adw::Application) {
         .build();
     loading.present();
     let events = background(|| {
-        let settings = Settings::load().map_err(|error| format!("{error:#}"));
+        let settings = StartupSettings::load();
         let recovered = settings::data_dir()
             .and_then(|directory| {
                 crate::recovery::load_at_startup(&directory.join(crate::recovery::FILE_NAME))
@@ -74,15 +74,12 @@ pub fn build(application: &adw::Application) {
         let (result, recovered) = match events.try_recv() {
             Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return gtk::glib::ControlFlow::Continue,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                (Err("Startup worker stopped unexpectedly".into()), Ok(None))
-            }
+            Err(mpsc::TryRecvError::Disconnected) => (
+                StartupSettings::unavailable("Startup worker stopped unexpectedly".into()),
+                Ok(None),
+            ),
         };
-        let (settings, error) = match result {
-            Ok(settings) => (settings, None),
-            Err(error) => (Settings::default(), Some(error)),
-        };
-        build_loaded(&application, settings, error, recovered);
+        build_loaded(&application, result, recovered);
         loading.close();
         gtk::glib::ControlFlow::Break
     });
@@ -90,11 +87,11 @@ pub fn build(application: &adw::Application) {
 
 fn build_loaded(
     application: &adw::Application,
-    settings: Settings,
-    load_error: Option<String>,
+    startup: StartupSettings,
     recovered: Result<Option<crate::recovery::Snapshot>, String>,
 ) {
-    let app = App::new(Some(application), settings, settings::SaveWorker::new());
+    let (settings, writer, load_warning) = startup.into_parts();
+    let app = App::new(Some(application), settings, writer);
     app.restore_prompts();
     if let Ok(Some(snapshot)) = &recovered {
         app.restore_recovery(snapshot);
@@ -104,8 +101,8 @@ fn build_loaded(
     app.update_model_label();
     app.refresh();
     app.window.present();
-    if let Some(error) = load_error {
-        dialogs::message(&app.window, "Preferences could not be loaded", &error);
+    if let Some(warning) = load_warning {
+        dialogs::message(&app.window, "Preferences could not be loaded", &warning);
     }
     match recovered {
         Ok(Some(_)) => app.consume_recovery(),

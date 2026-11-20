@@ -396,6 +396,37 @@ pub(super) fn failed_save_retry() {
     assert_eq!(attempts.load(Ordering::Relaxed), 2);
 }
 
+pub(super) fn closing_with_defaults_preserves_malformed_preferences_backup() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(settings::FILE_NAME);
+    let original = b"{\"llm_system_prompt\": \"Old instructions\"";
+    std::fs::write(&path, original).unwrap();
+    let (defaults, writer, warning) = settings::StartupSettings::load_in(root.path()).into_parts();
+    let backup = std::fs::read_dir(root.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join(settings::FILE_NAME);
+    assert!(warning.unwrap().contains(&backup.display().to_string()));
+    assert!(defaults.llm_system_prompt.is_empty());
+    assert!(!path.exists());
+    let app = App::new(None, defaults, writer);
+    app.restore_prompts();
+    app.connect();
+    app.window.present();
+    app.window.close();
+    wait_for_background("closing with fresh preferences", || {
+        app.poll_preferences_save();
+        app.lifecycle.get() == WindowLifecycle::ReadyToClose
+    });
+    assert!(!app.window.is_visible());
+    let fresh: settings::Settings = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(fresh.llm_system_prompt.is_empty());
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
+}
+
 pub(super) fn exit_without_updating_keeps_saved_recovery() {
     use crate::recovery;
     let root = tempfile::tempdir().unwrap();
