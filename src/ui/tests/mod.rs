@@ -35,6 +35,7 @@ fn settings_pages_and_menu_surfaces_build() {
     unsaved::header_unsaved_indicator();
     lifecycle::empty_edits_close_without_autosave();
     lifecycle::autosave_and_recovery();
+    lifecycle::close_confirmation_offers_autosave_for_new_worker_output();
     lifecycle::failed_autosave_keeps_content();
     lifecycle::discard_after_preferences_failure_removes_snapshot();
     lifecycle::lifecycle_job_ownership();

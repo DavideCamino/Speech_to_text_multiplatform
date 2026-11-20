@@ -176,6 +176,29 @@ impl App {
         }
     }
 
+    fn show_close_confirmation(self: &Rc<Self>, offered_autosave: bool) {
+        self.close_confirmation.set(true);
+        let weak = Rc::downgrade(self);
+        dialogs::confirm_close(&self.window, offered_autosave, move |response| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            // A worker may have produced its first output while the original
+            // dialog was open. Keep the guard set and offer autosave before
+            // treating this response as permission to discard that output.
+            if response == "close" && !offered_autosave && app.has_unsaved_content() {
+                app.show_close_confirmation(true);
+                return;
+            }
+            app.close_confirmation.set(false);
+            match response.as_str() {
+                "close" => app.close_without_saving(),
+                "autosave" => app.autosave_and_close(),
+                _ => {}
+            }
+        });
+    }
+
     pub(super) fn connect_close_request(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
@@ -190,23 +213,11 @@ impl App {
             }
             let has_unsaved_content = app.has_unsaved_content();
             if app.busy() || has_unsaved_content {
-                app.close_confirmation.set(true);
-                let weak = Rc::downgrade(&app);
-                dialogs::confirm_close(&app.window, has_unsaved_content, move |response| {
-                    if let Some(app) = weak.upgrade() {
-                        app.close_confirmation.set(false);
-                        match response.as_str() {
-                            "close" => app.close_without_saving(),
-                            "autosave" => app.autosave_and_close(),
-                            _ => {}
-                        }
-                    }
-                });
-                gtk::glib::Propagation::Stop
+                app.show_close_confirmation(has_unsaved_content);
             } else {
                 app.close_without_saving();
-                gtk::glib::Propagation::Stop
             }
+            gtk::glib::Propagation::Stop
         });
     }
 }

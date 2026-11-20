@@ -45,12 +45,90 @@ pub(super) fn closing_discards_entire_audio_batch() {
     app.window.destroy();
 }
 
-fn close_dialog() -> adw::MessageDialog {
-    gtk::Window::list_toplevels()
+fn close_dialog(app: &App) -> adw::MessageDialog {
+    let mut dialogs = gtk::Window::list_toplevels()
         .into_iter()
         .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
-        .find(|dialog| dialog.heading().as_deref() == Some("Close Speech2Text?"))
-        .expect("close confirmation")
+        .filter(|dialog| {
+            dialog.is_visible()
+                && dialog.transient_for().as_ref() == Some(app.window.upcast_ref())
+                && dialog.heading().as_deref() == Some("Close Speech2Text?")
+        });
+    let dialog = dialogs.next().expect("close confirmation");
+    assert!(dialogs.next().is_none(), "duplicate close confirmations");
+    dialog
+}
+
+fn respond_to_close(dialog: &adw::MessageDialog, response: &str) {
+    // Emitting the signal directly does not dismiss the dialog like a button
+    // click does. Simulate that dismissal without emitting a Cancel response.
+    dialog.response(response);
+    dialog.destroy();
+}
+
+pub(super) fn close_confirmation_offers_autosave_for_new_worker_output() {
+    use crate::{recovery, transcript::Segment};
+    for cancel_updated_dialog in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(recovery::FILE_NAME);
+        let mut app = test_app();
+        Rc::get_mut(&mut app).unwrap().recovery_path = Some(path.clone());
+        app.connect();
+        let (tx, events) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        *app.session.borrow_mut() = TranscriptionSession::Running {
+            source: SessionSource::Microphone,
+            job: Job {
+                events,
+                stop: stop.clone(),
+                cancel: cancel.clone(),
+            },
+        };
+        app.window.present();
+        app.window.close();
+        let original = close_dialog(&app);
+        assert!(!original.has_response("autosave"));
+        assert!(app.close_confirmation.get());
+
+        tx.send(Event::Final(vec![Segment {
+            start_ms: 0,
+            end_ms: 1000,
+            text: "First words arrived".into(),
+        }]))
+        .unwrap();
+        app.poll_transcription();
+        assert!(app.has_unsaved_content());
+        respond_to_close(&original, "close");
+        app.window.close(); // The updated dialog must still guard close requests.
+        let updated = close_dialog(&app);
+        assert!(updated.has_response("autosave"));
+        assert!(app.close_confirmation.get());
+        assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
+        assert!(app.session.borrow().is_running());
+        assert!(!stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed));
+        assert!(!path.exists());
+
+        if cancel_updated_dialog {
+            respond_to_close(&updated, "cancel");
+            assert!(!app.close_confirmation.get());
+            assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
+            assert!(app.window.is_visible() && app.session.borrow().is_running());
+            assert!(!stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed));
+            app.discard_active_work();
+            app.window.destroy();
+        } else {
+            respond_to_close(&updated, "autosave");
+            assert!(!app.close_confirmation.get());
+            assert!(cancel.load(Ordering::Relaxed));
+            wait_for_background("autosave of new worker output", || {
+                app.poll();
+                app.lifecycle.get() == WindowLifecycle::ReadyToClose
+            });
+            let snapshot = recovery::load(&path).unwrap().unwrap();
+            assert_eq!(snapshot.transcript.text, "First words arrived");
+        }
+    }
 }
 
 pub(super) fn autosave_and_recovery() {
@@ -83,12 +161,12 @@ pub(super) fn autosave_and_recovery() {
     app.stack.set_visible_child_name("rewrite");
     app.window.present();
     app.window.close();
-    assert!(close_dialog().has_response("autosave"));
-    close_dialog().response("cancel");
+    assert!(close_dialog(&app).has_response("autosave"));
+    respond_to_close(&close_dialog(&app), "cancel");
     assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
     assert!(!path.exists());
     app.window.close();
-    close_dialog().response("autosave");
+    respond_to_close(&close_dialog(&app), "autosave");
     assert_eq!(app.lifecycle.get(), WindowLifecycle::SavingRecovery);
     assert!(!app.window.is_sensitive());
     app.window.close(); // repeated close cannot interrupt the write
@@ -147,7 +225,7 @@ pub(super) fn autosave_and_recovery() {
     // Explicit discard must not create a recovery file.
     restored.window.present();
     restored.window.close();
-    close_dialog().response("close");
+    respond_to_close(&close_dialog(&restored), "close");
     wait_for_background("discard close", || {
         restored.poll_preferences_save();
         restored.lifecycle.get() == WindowLifecycle::ReadyToClose
@@ -176,7 +254,7 @@ pub(super) fn failed_autosave_keeps_content() {
     };
     app.window.present();
     app.window.close();
-    close_dialog().response("autosave");
+    respond_to_close(&close_dialog(&app), "autosave");
     wait_for_background("autosave failure", || {
         app.poll_recovery();
         app.lifecycle.get() == WindowLifecycle::Open
@@ -281,24 +359,14 @@ pub(super) fn lifecycle_job_ownership() {
     });
     app.window.present();
     app.window.close();
-    let confirmation = || {
-        gtk::Window::list_toplevels()
-            .into_iter()
-            .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
-            .find(|dialog| dialog.heading().as_deref() == Some("Close Speech2Text?"))
-            .expect("active work needs confirmation")
-    };
-    let dialog = confirmation();
+    let dialog = close_dialog(&app);
     assert!(!dialog.has_response("autosave"));
     assert!(dialog.has_response("cancel") && dialog.has_response("close"));
-    dialog.response("cancel");
-    dialog.close();
+    respond_to_close(&dialog, "cancel");
     assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
     assert!(!cancel.load(Ordering::Relaxed) && !test_cancel.load(Ordering::Relaxed));
     app.window.close();
-    let dialog = confirmation();
-    dialog.response("close");
-    dialog.close();
+    respond_to_close(&close_dialog(&app), "close");
     assert!(cancel.load(Ordering::Relaxed) && test_cancel.load(Ordering::Relaxed));
     assert!(!app.session.borrow().is_running());
     assert!(!app.rewrite_state.borrow().operation.is_testing());
@@ -459,7 +527,7 @@ pub(super) fn exit_without_updating_keeps_saved_recovery() {
         .buffer()
         .set_text("Saved before preferences failed");
     app.window.close();
-    close_dialog().response("autosave");
+    respond_to_close(&close_dialog(&app), "autosave");
     wait_for_background("final preferences failure after recovery save", || {
         app.poll();
         app.lifecycle.get() == WindowLifecycle::ConfirmingCloseAfterSaveFailure
