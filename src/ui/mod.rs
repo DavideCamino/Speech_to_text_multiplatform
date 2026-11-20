@@ -61,7 +61,7 @@ pub fn build(application: &adw::Application) {
         let settings = Settings::load().map_err(|error| format!("{error:#}"));
         let recovered = settings::data_dir()
             .and_then(|directory| {
-                crate::recovery::load(&directory.join(crate::recovery::FILE_NAME))
+                crate::recovery::load_at_startup(&directory.join(crate::recovery::FILE_NAME))
             })
             .map_err(|error| format!("{error:#}"));
         (settings, recovered)
@@ -113,7 +113,7 @@ fn build_loaded(
         Err(error) => dialogs::message(
             &app.window,
             "Previous session could not be restored",
-            &format!("{error}\n\nThe recovery file has been preserved."),
+            &error,
         ),
     }
     // This main-loop source owns the controller until the window closes. All

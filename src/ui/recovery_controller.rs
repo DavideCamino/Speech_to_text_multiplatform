@@ -114,9 +114,15 @@ impl App {
             .status
             .set_text("Autosaving unsaved content before closing…");
         let path = self.recovery_path.clone();
+        let owned = self.recovery_owned.get();
         let events = background(move || {
             let path = path.ok_or_else(|| "Cannot locate the recovery directory".to_owned())?;
-            recovery::save(&path, &snapshot).map_err(|error| format!("{error:#}"))
+            if owned {
+                recovery::save(&path, &snapshot)
+            } else {
+                recovery::save_new(&path, &snapshot)
+            }
+            .map_err(|error| format!("{error:#}"))
         });
         *self.recovery_task.borrow_mut() = Some(RecoveryTask {
             action: Action::Save,
