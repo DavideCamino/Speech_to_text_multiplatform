@@ -40,6 +40,7 @@ fn settings_pages_and_menu_surfaces_build() {
     lifecycle::lifecycle_job_ownership();
     lifecycle::final_save_ordering();
     lifecycle::failed_save_retry();
+    lifecycle::exit_without_updating_keeps_saved_recovery();
     preferences::recognition_apply_closes_and_saves();
     rewrite::rewrite_generation_states();
     transcription::incremental_transcript_updates();

@@ -7,7 +7,7 @@ use crate::transcription;
 use adw::prelude::*;
 use std::rc::Rc;
 
-/// Closing stays asynchronous: only the latest completed save may release the window.
+/// Closing stays asynchronous: release the window after the final save or an explicit bypass.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum WindowLifecycle {
     #[default]
@@ -15,42 +15,51 @@ pub(super) enum WindowLifecycle {
     SavingRecovery,
     RestoringRecovery,
     SavingBeforeClose,
+    ConfirmingCloseAfterSaveFailure,
     ReadyToClose,
 }
 
 impl App {
-    pub(super) fn persist(&self) {
-        let result = self
-            .settings_writer
+    fn submit_preferences(&self) -> Result<(), String> {
+        self.settings_writer
             .borrow_mut()
-            .submit(self.settings.borrow().clone());
-        if let Err(error) = result {
-            self.preferences_save_finished(Err(error));
+            .submit(self.settings.borrow().clone())
+    }
+
+    pub(super) fn persist(&self) {
+        if self.lifecycle.get() == WindowLifecycle::Open
+            && let Err(error) = self.submit_preferences()
+        {
+            self.show_preferences_error(&error);
         }
     }
 
     pub(super) fn persist_controls(&self) {
-        {
-            let mut settings = self.settings.borrow_mut();
-            settings.language = self.preferences.language.selected_language();
-            settings.use_gpu = self.preferences.gpu.is_active();
-            settings.gpu_backend = self
-                .preferences
-                .gpu_backend
-                .selected()
-                .checked_sub(1)
-                .and_then(|index| {
-                    transcription::compiled_gpu_backends()
-                        .get(index as usize)
-                        .copied()
-                });
-            settings.device = self.preferences.selected_device();
-            settings.llm_options = self.llm_options();
-            if let Ok(connection) = self.llm_connection() {
-                settings.llm = connection;
-            }
+        if self.lifecycle.get() == WindowLifecycle::Open {
+            self.capture_controls();
+            self.persist();
         }
-        self.persist();
+    }
+
+    fn capture_controls(&self) {
+        let mut settings = self.settings.borrow_mut();
+        settings.language = self.preferences.language.selected_language();
+        settings.use_gpu = self.preferences.gpu.is_active();
+        settings.gpu_backend = self
+            .preferences
+            .gpu_backend
+            .selected()
+            .checked_sub(1)
+            .and_then(|index| {
+                transcription::compiled_gpu_backends()
+                    .get(index as usize)
+                    .copied()
+            });
+        settings.device = self.preferences.selected_device();
+        settings.llm_options = self.llm_options();
+        if let Ok(connection) = self.llm_connection() {
+            settings.llm = connection;
+        }
     }
 
     pub(super) fn restore_prompts(&self) {
@@ -74,14 +83,11 @@ impl App {
         self.rewrite_state.borrow_mut().operation = RewriteOperation::Idle;
     }
 
-    pub(super) fn begin_close(&self) {
+    pub(super) fn begin_close(self: &Rc<Self>) {
         if self.lifecycle.get() != WindowLifecycle::Open {
             return;
         }
         self.lifecycle.set(WindowLifecycle::SavingBeforeClose);
-        self.main
-            .status
-            .set_text("Saving preferences before closing…");
         self.discard_active_work();
         // Capture the exact text, including deliberately empty values. Prompt
         // edits are not written by intermediate settings saves during the session.
@@ -90,33 +96,80 @@ impl App {
             settings.whisper_context = buffer_text(&self.main.context);
             settings.llm_system_prompt = buffer_text(&self.rewrite.prompt);
         }
-        self.refresh();
-        // The window stays alive until the latest save completes. Never join
-        // the writer or block GTK, and never lose the final save at process exit.
-        self.persist_controls();
+        self.capture_controls();
+        self.save_preferences_before_close();
     }
 
-    fn preferences_save_finished(&self, result: Result<(), String>) {
+    fn save_preferences_before_close(self: &Rc<Self>) {
+        self.lifecycle.set(WindowLifecycle::SavingBeforeClose);
+        self.main
+            .status
+            .set_text("Saving preferences before closing…");
+        self.refresh();
+        if let Err(error) = self.submit_preferences() {
+            self.preferences_save_finished(Err(error));
+        }
+    }
+
+    fn show_preferences_error(&self, error: &str) {
+        self.main
+            .status
+            .set_text(&format!("Could not save preferences: {error}"));
+    }
+
+    fn finish_close(&self) {
+        self.lifecycle.set(WindowLifecycle::ReadyToClose);
+        self.window.close();
+    }
+
+    fn preferences_save_finished(self: &Rc<Self>, result: Result<(), String>) {
+        let closing = self.lifecycle.get() == WindowLifecycle::SavingBeforeClose;
         match result {
-            Ok(()) if self.lifecycle.get() == WindowLifecycle::SavingBeforeClose => {
-                self.lifecycle.set(WindowLifecycle::ReadyToClose);
-                self.window.close();
-            }
+            Ok(()) if closing => self.finish_close(),
             Ok(()) => {}
             Err(error) => {
-                self.main
-                    .status
-                    .set_text(&format!("Could not save preferences: {error}"));
-                if self.lifecycle.get() == WindowLifecycle::SavingBeforeClose {
-                    self.lifecycle.set(WindowLifecycle::Open);
-                    self.refresh();
-                    dialogs::message(&self.window, "Could not save preferences", &error);
+                self.show_preferences_error(&error);
+                if closing {
+                    self.confirm_close_after_save_failure(&error);
                 }
             }
         }
     }
 
-    pub(super) fn poll_preferences_save(&self) {
+    fn confirm_close_after_save_failure(self: &Rc<Self>, error: &str) {
+        self.lifecycle
+            .set(WindowLifecycle::ConfirmingCloseAfterSaveFailure);
+        self.refresh();
+        let weak = Rc::downgrade(self);
+        dialogs::confirm(
+            &self.window,
+            "Could not save preferences",
+            &format!(
+                "{error}\n\nRetry saving, exit without updating preferences, or return to the editor."
+            ),
+            &[
+                ("retry", "Retry"),
+                ("exit", "Exit without updating preferences"),
+            ],
+            move |response| {
+                if let Some(app) = weak.upgrade()
+                    && app.lifecycle.get() == WindowLifecycle::ConfirmingCloseAfterSaveFailure
+                {
+                    match response.as_str() {
+                        "retry" => app.save_preferences_before_close(),
+                        // Do not re-run shutdown or consume a recovery snapshot.
+                        "exit" => app.finish_close(),
+                        _ => {
+                            app.lifecycle.set(WindowLifecycle::Open);
+                            app.refresh();
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    pub(super) fn poll_preferences_save(self: &Rc<Self>) {
         let result = self.settings_writer.borrow_mut().poll();
         if let Some(result) = result {
             self.preferences_save_finished(result);

@@ -4,6 +4,7 @@ use crate::{
     settings,
     transcription::{Completion, Event, Job},
     ui::{
+        app::App,
         lifecycle::WindowLifecycle,
         rewrite::RewriteOperation,
         transcription_controller::{SessionSource, TranscriptionSession},
@@ -11,9 +12,10 @@ use crate::{
 };
 use adw::prelude::*;
 use std::{
+    rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     time::Duration,
@@ -203,20 +205,19 @@ pub(super) fn discard_after_preferences_failure_removes_snapshot() {
     app.main.transcript.buffer().set_text("Temporary draft");
     *app.settings_writer.borrow_mut() =
         settings::SaveWorker::with_save(|_| anyhow::bail!("preferences failure"));
+    app.window.present();
     app.autosave_and_close();
     wait_for_background("preferences failure after autosave", || {
         app.poll_recovery();
         app.poll_preferences_save();
-        app.lifecycle.get() == WindowLifecycle::Open
+        app.lifecycle.get() == WindowLifecycle::ConfirmingCloseAfterSaveFailure
     });
     assert!(path.exists());
     assert!(app.recovery_owned.get());
-    let failure = gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
-        .find(|dialog| dialog.heading().as_deref() == Some("Could not save preferences"))
-        .unwrap();
-    failure.close();
+    preferences_failure_dialog(&app).response("cancel");
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
+    assert!(app.window.is_sensitive() && app.main.transcript.is_editable());
+    assert!(path.exists());
     *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(|_| Ok(()));
     app.close_without_saving();
     wait_for_background("discard recovery before closing", || {
@@ -354,32 +355,95 @@ pub(super) fn final_save_ordering() {
     assert!(matches!(started.try_recv(), Err(mpsc::TryRecvError::Empty)));
 }
 
-pub(super) fn failed_save_retry() {
-    // A failed final save leaves the window usable and surfaces the error.
-    let app = test_app();
-    app.connect();
-    *app.settings_writer.borrow_mut() =
-        settings::SaveWorker::with_save(|_| anyhow::bail!("simulated disk failure"));
-    app.window.present();
-    app.window.close();
-    wait_for_background("window lifecycle transition", || {
-        app.poll_preferences_save();
-        app.lifecycle.get() == WindowLifecycle::Open
-    });
-    assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
-    assert!(app.window.is_sensitive());
-    assert!(app.main.status.text().contains("simulated disk failure"));
-    assert!(app.main.transcript.is_editable());
-    let dialog = gtk::Window::list_toplevels()
+fn preferences_failure_dialog(app: &App) -> adw::MessageDialog {
+    gtk::Window::list_toplevels()
         .into_iter()
         .filter_map(|window| window.downcast::<adw::MessageDialog>().ok())
-        .find(|dialog| dialog.heading().as_deref() == Some("Could not save preferences"))
-        .expect("save failure is surfaced");
-    dialog.close();
-    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(|_| Ok(()));
+        .find(|dialog| {
+            dialog.is_visible()
+                && dialog.transient_for().as_ref() == Some(app.window.upcast_ref())
+                && dialog.heading().as_deref() == Some("Could not save preferences")
+        })
+        .expect("save failure is surfaced")
+}
+
+pub(super) fn failed_save_retry() {
+    let app = test_app();
+    app.connect();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let count = attempts.clone();
+    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(move |_| {
+        if count.fetch_add(1, Ordering::Relaxed) == 0 {
+            anyhow::bail!("simulated disk failure");
+        }
+        Ok(())
+    });
+    app.window.present();
     app.window.close();
-    wait_for_background("window lifecycle transition", || {
+    wait_for_background("final preferences failure", || {
+        app.poll_preferences_save();
+        app.lifecycle.get() == WindowLifecycle::ConfirmingCloseAfterSaveFailure
+    });
+    let dialog = preferences_failure_dialog(&app);
+    assert!(dialog.body().contains("simulated disk failure"));
+    assert!(app.window.is_visible() && dialog.is_sensitive());
+    dialog.response("retry");
+    wait_for_background("final preferences retry", || {
         app.poll_preferences_save();
         app.lifecycle.get() == WindowLifecycle::ReadyToClose
     });
+    assert!(!app.window.is_visible());
+    assert_eq!(attempts.load(Ordering::Relaxed), 2);
+}
+
+pub(super) fn exit_without_updating_keeps_saved_recovery() {
+    use crate::recovery;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(recovery::FILE_NAME);
+    let mut app = test_app();
+    Rc::get_mut(&mut app).unwrap().recovery_path = Some(path.clone());
+    app.connect();
+    let (attempted, attempts) = mpsc::channel();
+    *app.settings_writer.borrow_mut() = settings::SaveWorker::with_save(move |_| {
+        attempted.send(()).unwrap();
+        anyhow::bail!("persistent preferences failure");
+    });
+    app.window.present();
+
+    // A regular save failure must not offer to exit or lock the editor.
+    app.persist();
+    wait_for_background("ordinary preferences failure", || {
+        app.poll_preferences_save();
+        app.main
+            .status
+            .text()
+            .contains("persistent preferences failure")
+    });
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::Open);
+    assert!(app.window.is_sensitive());
+    attempts.try_recv().unwrap();
+
+    app.main
+        .transcript
+        .buffer()
+        .set_text("Saved before preferences failed");
+    app.window.close();
+    close_dialog().response("autosave");
+    wait_for_background("final preferences failure after recovery save", || {
+        app.poll();
+        app.lifecycle.get() == WindowLifecycle::ConfirmingCloseAfterSaveFailure
+    });
+    attempts.try_recv().unwrap();
+    let before = std::fs::read(&path).unwrap();
+    preferences_failure_dialog(&app).response("exit");
+    assert_eq!(app.lifecycle.get(), WindowLifecycle::ReadyToClose);
+    assert!(!app.window.is_visible());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // Drop the sender held by the worker: if a save was queued on exit, it
+    // must be observed before the worker disconnects.
+    drop(app);
+    assert!(matches!(
+        attempts.recv_timeout(Duration::from_secs(5)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
 }

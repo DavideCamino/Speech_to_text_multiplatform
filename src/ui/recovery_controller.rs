@@ -70,7 +70,7 @@ impl App {
         self.delete_recovery(Action::Consume);
     }
 
-    pub(super) fn close_without_saving(&self) {
+    pub(super) fn close_without_saving(self: &Rc<Self>) {
         if self.lifecycle.get() != WindowLifecycle::Open {
             return;
         }
