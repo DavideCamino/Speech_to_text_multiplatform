@@ -1,9 +1,25 @@
 //! Ordered file jobs, duration-based remaining time, and queue controls.
 use crate::transcription::Completion;
-use std::{path::PathBuf, sync::mpsc::Receiver, time::Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+    },
+    time::Instant,
+};
+
+const METADATA_BUFFER: usize = 64;
+const METADATA_UPDATES_PER_POLL: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FileId(usize);
 
 #[derive(Debug)]
 pub(super) struct AudioFile {
+    id: FileId,
     pub path: PathBuf,
     pub duration: Option<f64>,
 }
@@ -18,47 +34,104 @@ pub(super) struct Batch {
     pub incomplete: Vec<PathBuf>,
 }
 
-type Durations = Vec<(PathBuf, Option<f64>)>;
+type DurationUpdate = (FileId, Option<f64>);
+
+struct DurationProbe {
+    results: Receiver<DurationUpdate>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl DurationProbe {
+    fn start(
+        files: Vec<(FileId, PathBuf)>,
+        mut probe: impl FnMut(&Path) -> Option<f64> + Send + 'static,
+    ) -> Self {
+        let (tx, results) = mpsc::sync_channel(METADATA_BUFFER);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancelled = cancel.clone();
+        std::thread::spawn(move || {
+            for (id, path) in files {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                let duration = probe(&path).filter(|d| d.is_finite() && *d > 0.0);
+                if cancelled.load(Ordering::Relaxed) || tx.send((id, duration)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { results, cancel }
+    }
+}
+
+impl Drop for DurationProbe {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        // Dropping the receiver also wakes a sender waiting on a full channel.
+    }
+}
 
 #[derive(Default)]
 pub(super) struct AudioQueue {
     pub files: Vec<AudioFile>,
     pub revision: u64,
     pub batch: Option<Batch>,
-    metadata: Option<Receiver<Durations>>,
+    rows: HashMap<FileId, usize>,
+    metadata: Option<DurationProbe>,
 }
 
 impl AudioQueue {
     pub fn replace(&mut self, paths: Vec<PathBuf>) {
+        self.replace_with_probe(paths, |path| {
+            crate::audio::AudioFile::open(path)
+                .ok()
+                .and_then(|audio| audio.duration_seconds)
+        });
+    }
+
+    fn replace_with_probe(
+        &mut self,
+        paths: Vec<PathBuf>,
+        probe: impl FnMut(&Path) -> Option<f64> + Send + 'static,
+    ) {
         self.clear();
-        let probe = paths.clone();
+        // IDs are stable for this selection. Replacements get a new channel,
+        // so a late result cannot match an ID in the replacement queue.
         self.files = paths
             .into_iter()
-            .map(|path| AudioFile {
+            .enumerate()
+            .map(|(index, path)| AudioFile {
+                id: FileId(index),
                 path,
                 duration: None,
             })
             .collect();
+        self.reindex();
         if !self.files.is_empty() {
-            self.metadata = Some(super::task::background(move || {
-                probe
-                    .into_iter()
-                    .map(|path| {
-                        let duration = crate::audio::AudioFile::open(&path)
-                            .ok()
-                            .and_then(|audio| audio.duration_seconds)
-                            .filter(|d| d.is_finite() && *d > 0.0);
-                        (path, duration)
-                    })
-                    .collect()
-            }));
+            let files = self
+                .files
+                .iter()
+                .map(|file| (file.id, file.path.clone()))
+                .collect();
+            self.metadata = Some(DurationProbe::start(files, probe));
         }
     }
 
+    fn reindex(&mut self) {
+        self.rows.clear();
+        self.rows.extend(
+            self.files
+                .iter()
+                .enumerate()
+                .map(|(row, file)| (file.id, row)),
+        );
+    }
+
     pub fn clear(&mut self) {
-        self.files.clear();
-        self.batch = None;
         self.metadata = None;
+        self.files.clear();
+        self.rows.clear();
+        self.batch = None;
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -73,11 +146,9 @@ impl AudioQueue {
         {
             return false;
         }
-        // Pending metadata is ordered by the original selection. Resolve it by
-        // path rather than index, so a reorder cannot attach the wrong duration.
-        self.poll_metadata();
         let file = self.files.remove(from);
         self.files.insert(to, file);
+        self.reindex();
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -87,6 +158,10 @@ impl AudioQueue {
             return false;
         }
         self.files.remove(index);
+        self.reindex();
+        if self.files.is_empty() {
+            self.metadata = None;
+        }
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -148,16 +223,23 @@ impl AudioQueue {
     }
 
     pub fn poll_metadata(&mut self) {
-        if let Some(rx) = &self.metadata
-            && let Ok(durations) = rx.try_recv()
-        {
-            for file in &mut self.files {
-                file.duration = durations
-                    .iter()
-                    .find(|(path, _)| *path == file.path)
-                    .and_then(|(_, duration)| *duration);
+        let Some(probe) = &self.metadata else {
+            return;
+        };
+        // A ready backlog must not keep GTK from handling input or job events.
+        for _ in 0..METADATA_UPDATES_PER_POLL {
+            match probe.results.try_recv() {
+                Ok((id, duration)) => {
+                    if let Some(&row) = self.rows.get(&id) {
+                        self.files[row].duration = duration;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.metadata = None;
+                    break;
+                }
             }
-            self.metadata = None;
         }
     }
 }
@@ -314,22 +396,28 @@ mod tests {
     use std::{sync::mpsc, time::Duration};
 
     fn queue() -> AudioQueue {
-        AudioQueue {
-            files: vec![
-                AudioFile {
-                    path: "a.wav".into(),
-                    duration: Some(60.0),
-                },
-                AudioFile {
-                    path: "b.wav".into(),
-                    duration: Some(120.0),
-                },
-                AudioFile {
-                    path: "c.wav".into(),
-                    duration: Some(180.0),
-                },
-            ],
+        let mut queue = AudioQueue {
+            files: [("a.wav", 60.0), ("b.wav", 120.0), ("c.wav", 180.0)]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (name, duration))| AudioFile {
+                    id: FileId(index),
+                    path: name.into(),
+                    duration: Some(duration),
+                })
+                .collect(),
             ..AudioQueue::default()
+        };
+        queue.reindex();
+        queue
+    }
+
+    fn wait_for_metadata(queue: &mut AudioQueue) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while queue.metadata.is_some() {
+            queue.poll_metadata();
+            assert!(Instant::now() < deadline, "duration probe did not finish");
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -356,34 +444,119 @@ mod tests {
     }
 
     #[test]
-    fn metadata_follows_paths_after_reorder_and_removal() {
+    fn metadata_follows_ids_after_reorder_and_removal_even_for_duplicate_paths() {
         let mut q = queue();
-        let (tx, rx) = mpsc::channel();
-        q.metadata = Some(rx);
-        q.move_file(0, 2);
-        q.remove(0);
-        tx.send(vec![
-            ("a.wav".into(), Some(10.0)),
-            ("b.wav".into(), Some(20.0)),
-            ("c.wav".into(), Some(30.0)),
-        ])
-        .unwrap();
+        let [first, second, removed] = [q.files[0].id, q.files[1].id, q.files[2].id];
+        q.files[1].path = q.files[0].path.clone();
+        let (tx, results) = mpsc::channel();
+        q.metadata = Some(DurationProbe {
+            results,
+            cancel: Arc::default(),
+        });
+        assert!(q.move_file(0, 2)); // second, removed, first
+        assert!(q.remove(1));
+        tx.send((first, Some(10.0))).unwrap();
+        tx.send((second, Some(20.0))).unwrap();
+        tx.send((removed, Some(30.0))).unwrap();
         q.poll_metadata();
-        assert_eq!(q.files[0].path, PathBuf::from("c.wav"));
-        assert_eq!(q.files[0].duration, Some(30.0));
+        assert_eq!(q.files[0].path, q.files[1].path);
+        assert_eq!(q.files[0].id, second);
+        assert_eq!(q.files[0].duration, Some(20.0));
+        assert_eq!(q.files[1].id, first);
         assert_eq!(q.files[1].duration, Some(10.0));
     }
 
     #[test]
-    fn replacing_selection_discards_old_metadata() {
-        let mut q = queue();
-        let (tx, rx) = mpsc::channel();
-        q.metadata = Some(rx);
-        let revision = q.revision;
-        q.clear();
-        assert!(q.revision != revision);
-        assert!(tx.send(vec![]).is_err());
-        assert!(q.remaining_seconds().is_none());
+    fn replacing_selection_stops_old_probe_before_the_next_file() {
+        let mut q = AudioQueue::default();
+        let (started, attempts) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let timeout = Duration::from_secs(5);
+        q.replace_with_probe(
+            vec!["a.wav".into(), "b.wav".into(), "c.wav".into()],
+            move |path| {
+                started.send(path.to_owned()).unwrap();
+                if path == Path::new("a.wav") {
+                    resume.recv_timeout(timeout).unwrap();
+                }
+                Some(11.0)
+            },
+        );
+        assert_eq!(attempts.recv_timeout(timeout).unwrap(), Path::new("a.wav"));
+        let old_cancel = q.metadata.as_ref().unwrap().cancel.clone();
+        q.replace_with_probe(vec!["new.wav".into()], |_| Some(22.0));
+        assert!(old_cancel.load(Ordering::Relaxed));
+        release.send(()).unwrap();
+        // The probe owns the sender. Disconnection proves it exited without
+        // opening b.wav or c.wav, rather than merely being slow to start them.
+        assert_eq!(
+            attempts.recv_timeout(timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        wait_for_metadata(&mut q);
+        assert_eq!(q.files[0].path, Path::new("new.wav"));
+        assert_eq!(q.files[0].duration, Some(22.0));
+    }
+
+    #[test]
+    fn duration_updates_arrive_before_the_rest_of_the_scan_finishes() {
+        let mut q = AudioQueue::default();
+        let (entered, wait_for_second) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let timeout = Duration::from_secs(5);
+        q.replace_with_probe(vec!["a.wav".into(), "b.wav".into()], move |path| {
+            if path == Path::new("b.wav") {
+                entered.send(()).unwrap();
+                resume.recv_timeout(timeout).unwrap();
+                Some(20.0)
+            } else {
+                Some(10.0)
+            }
+        });
+        wait_for_second.recv_timeout(timeout).unwrap();
+        q.poll_metadata();
+        assert_eq!(q.files[0].duration, Some(10.0));
+        assert_eq!(q.files[1].duration, None);
+        q.begin(0);
+        q.batch.as_mut().unwrap().fraction = 0.5;
+        assert!(q.remaining_seconds().is_none(), "no partial total");
+        release.send(()).unwrap();
+        wait_for_metadata(&mut q);
+        assert_eq!(q.files[1].duration, Some(20.0));
+        assert!(q.remaining_seconds().is_some());
+    }
+
+    #[test]
+    fn duration_poll_limits_work_when_many_results_are_ready() {
+        let mut q = AudioQueue::default();
+        let (tx, results) = mpsc::channel();
+        q.metadata = Some(DurationProbe {
+            results,
+            cancel: Arc::default(),
+        });
+        for index in 0..=METADATA_UPDATES_PER_POLL {
+            let id = FileId(index);
+            q.files.push(AudioFile {
+                id,
+                path: "fixture.wav".into(),
+                duration: None,
+            });
+            tx.send((id, Some(1.0))).unwrap();
+        }
+        q.reindex();
+        drop(tx);
+        q.poll_metadata();
+        assert_eq!(
+            q.files
+                .iter()
+                .filter(|file| file.duration.is_some())
+                .count(),
+            METADATA_UPDATES_PER_POLL
+        );
+        assert!(q.metadata.is_some());
+        q.poll_metadata();
+        assert!(q.files.iter().all(|file| file.duration == Some(1.0)));
+        assert!(q.metadata.is_none());
     }
 
     #[test]
@@ -464,12 +637,7 @@ mod tests {
         let mut q = AudioQueue::default();
         q.replace(vec![path.clone(), invalid.clone()]);
         q.move_file(0, 1);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while q.metadata.is_some() {
-            q.poll_metadata();
-            assert!(Instant::now() < deadline, "duration probe did not finish");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        wait_for_metadata(&mut q);
         assert_eq!(q.files[0].path, invalid);
         assert_eq!(q.files[0].duration, None);
         assert_eq!(q.files[1].path, path);
