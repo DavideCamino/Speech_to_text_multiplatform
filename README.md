@@ -101,7 +101,8 @@ The renderer supports headings, emphasis, lists, quotations, and code. Links are
 
 ## Missing features and current limitations
 
-- No periodic autosaving, crash recovery, transcript history, audio saving, translation, speaker diarization, or batch-file queue. Save-on-close recovery requires explicitly choosing Autosave & Close.
+- No periodic autosaving, crash recovery, transcript history, audio saving, translation, or speaker diarization. Save-on-close recovery requires explicitly choosing **Autosave & Close**.
+- The batch-file queue is not saved across restarts, and interrupted batches do not resume automatically.
 - No model-download resume or automatic microphone hot-plug monitoring.
 - Live recognition is chunk-based, not instantaneous. Slow inference can overflow the capture queue; use a smaller model or supported GPU. Silence can still produce hallucinated text.
 - Subtitle timings are approximate. Dedicated voice-activity detection, professional alignment, and subtitle editing are not implemented.
