@@ -65,6 +65,13 @@ fn buttons(app: &App, index: i32) -> (gtk::Button, gtk::Button, gtk::Button) {
 
 pub(super) fn queue_interactions() {
     let app = ready();
+    app.queue_audios((0..64).map(|i| format!("{i}.wav").into()).collect());
+    assert!(app.main.audio_list.row_at_index(63).is_some());
+    app.request_cancel();
+    assert!(app.audio_queue.borrow().files.is_empty());
+    assert!(app.main.audio_list.first_child().is_none());
+    assert!(!app.main.audio_expander.is_visible());
+
     app.queue_audios(vec!["a.wav".into(), "b.wav".into(), "c.wav".into()]);
     assert!(app.main.audio_expander.property::<bool>("visible"));
     assert!(app.main.selected_audio.text().contains("3 audio files"));
@@ -113,9 +120,11 @@ pub(super) fn queue_interactions() {
     assert_eq!(app.audio_queue.borrow().files.len(), 2);
     let tx = fake_job(&app);
     app.request_cancel();
+    assert!(app.main.audio_list.row_at_index(1).is_some());
     tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert!(app.audio_queue.borrow().files.is_empty());
+    assert!(app.main.audio_list.first_child().is_none());
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
     app.window.destroy();
 }
@@ -217,6 +226,7 @@ pub(super) fn sequential_batch() {
     );
     assert!(!app.session.borrow().is_running());
     assert!(app.audio_queue.borrow().files.is_empty());
+    assert!(app.main.audio_list.first_child().is_none());
     assert!(!app.main.file_progress.property::<bool>("visible"));
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
     app.window.destroy();

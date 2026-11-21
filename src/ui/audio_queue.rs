@@ -245,12 +245,15 @@ impl AudioQueue {
 }
 
 impl super::app::App {
+    pub(super) fn clear_audio_queue(&self) {
+        self.audio_queue.borrow_mut().clear();
+        self.main.audio_list.remove_all();
+    }
+
     pub(super) fn rebuild_audio_queue(self: &std::rc::Rc<Self>) {
         use adw::prelude::*;
         use std::rc::Rc;
-        while let Some(child) = self.main.audio_list.first_child() {
-            self.main.audio_list.remove(&child);
-        }
+        self.main.audio_list.remove_all();
         let queue = self.audio_queue.borrow();
         let count = queue.files.len();
         for (index, file) in queue.files.iter().enumerate() {

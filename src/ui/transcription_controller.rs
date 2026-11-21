@@ -123,14 +123,12 @@ impl App {
 
     pub(super) fn request_cancel(&self) {
         let transcribing = self.session.borrow().request_cancel();
-        let mut queue = self.audio_queue.borrow_mut();
-        let cleared_audio = !queue.files.is_empty();
+        let cleared_audio = !self.audio_queue.borrow().files.is_empty();
         // Keep offsets and boundaries until the terminal event, so any final
         // cues already queued by the worker can still be applied correctly.
-        if !transcribing || queue.batch.is_none() {
-            queue.clear();
+        if !transcribing || self.audio_queue.borrow().batch.is_none() {
+            self.clear_audio_queue();
         }
-        drop(queue);
         let downloading = self.model_state.borrow().operation.request_cancel();
         if !transcribing && !downloading {
             if cleared_audio {
@@ -237,7 +235,7 @@ impl App {
                 )
             }
             Source::Microphone => {
-                self.audio_queue.borrow_mut().clear();
+                self.clear_audio_queue();
                 (
                     SessionSource::Microphone,
                     transcription::start(Source::Microphone, settings, offset, context),
@@ -329,9 +327,8 @@ impl App {
                     self.document.render();
                     transcript_changed = false;
                     let batch = if file {
-                        let mut queue = self.audio_queue.borrow_mut();
-                        let batch = queue.batch.take();
-                        queue.clear();
+                        let batch = self.audio_queue.borrow_mut().batch.take();
+                        self.clear_audio_queue();
                         batch
                     } else {
                         None

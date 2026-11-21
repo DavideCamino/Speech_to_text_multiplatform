@@ -24,6 +24,7 @@ use std::{
 pub(super) fn closing_discards_entire_audio_batch() {
     let app = test_app();
     app.queue_audios(vec!["first.wav".into(), "second.wav".into()]);
+    assert!(app.main.audio_list.row_at_index(1).is_some());
     app.audio_queue.borrow_mut().begin(0);
     let (tx, events) = mpsc::sync_channel(2);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -41,6 +42,7 @@ pub(super) fn closing_discards_entire_audio_batch() {
     assert!(cancel.load(Ordering::Relaxed));
     assert!(!app.session.borrow().is_running());
     assert!(app.audio_queue.borrow().files.is_empty());
+    assert!(app.main.audio_list.first_child().is_none());
     assert!(app.audio_queue.borrow().batch.is_none());
     app.window.destroy();
 }

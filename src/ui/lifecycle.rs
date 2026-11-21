@@ -77,7 +77,7 @@ impl App {
     /// Release job ownership; each job's Drop implementation requests cancellation.
     pub(super) fn discard_active_work(&self) {
         self.session.borrow_mut().finish();
-        self.audio_queue.borrow_mut().clear();
+        self.clear_audio_queue();
         self.main.meter.set_value(0.0);
         self.model_state.borrow_mut().operation = ModelOperation::Idle;
         self.rewrite_state.borrow_mut().operation = RewriteOperation::Idle;
