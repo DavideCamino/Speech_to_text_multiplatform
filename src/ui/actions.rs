@@ -96,7 +96,6 @@ impl App {
     fn connect_preferences_actions(self: &Rc<Self>) {
         on_click(&self.preferences.stt_apply, self, |app| {
             if !app.busy() {
-                app.persist_controls();
                 app.preferences.window.close();
             }
         });
@@ -109,6 +108,7 @@ impl App {
                 app.preferences.update_device_status();
             }
         });
+        // Both Apply buttons and ordinary close save through this handler.
         let weak = Rc::downgrade(self);
         self.preferences.window.connect_close_request(move |_| {
             if let Some(app) = weak.upgrade() {

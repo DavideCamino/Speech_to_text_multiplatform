@@ -226,9 +226,11 @@ pub(super) fn model_loading_controls_and_readiness_follow_selection() {
     app.refresh();
 
     let start_load = || {
+        app.preferences.window.present();
         let (tx, events) = mpsc::sync_channel(2);
         let expected_server = app.llm_connection().unwrap();
         let expected_model = app.llm_options().model;
+        let before_apply = app.settings_writer.borrow().submitted_count();
         app.apply_llm_with(move |server, _, options| {
             assert_eq!(server, expected_server);
             assert_eq!(options.model, expected_model);
@@ -238,6 +240,12 @@ pub(super) fn model_loading_controls_and_readiness_follow_selection() {
             }
         });
         assert!(app.rewrite_state.borrow().operation.is_loading());
+        assert_eq!(
+            app.settings_writer.borrow().submitted_count(),
+            before_apply + 1
+        );
+        assert_eq!(app.settings.borrow().llm, app.llm_connection().unwrap());
+        assert!(!app.preferences.window.is_visible());
         tx
     };
     let complete_load = |tx: mpsc::SyncSender<llm::Event>| {
@@ -249,8 +257,16 @@ pub(super) fn model_loading_controls_and_readiness_follow_selection() {
     };
     app.window.present();
     app.preferences.window.present();
+    app.preferences.llm_port.set_text("invalid");
+    let before_invalid = app.settings_writer.borrow().submitted_count();
+    app.apply_llm_with(|_, _, _| panic!("Invalid settings must not start a load"));
+    assert!(app.preferences.window.is_visible());
+    assert_eq!(
+        app.settings_writer.borrow().submitted_count(),
+        before_invalid
+    );
+    app.preferences.llm_port.set_text("8080");
     let load = start_load();
-    assert!(!app.preferences.window.is_visible());
     app.preferences.window.present();
     assert!(app.preferences.window.is_visible());
     for widget in [

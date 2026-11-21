@@ -337,7 +337,6 @@ impl App {
                 return;
             }
         };
-        self.persist_controls();
         let target = LoadTarget {
             connection: connection.clone(),
             model,

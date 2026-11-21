@@ -267,6 +267,11 @@ impl SaveWorker {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn submitted_count(&self) -> u64 {
+        self.latest
+    }
+
     /// Report only the latest requested save, never a stale success/error.
     pub fn poll(&mut self) -> Option<Result<(), String>> {
         loop {

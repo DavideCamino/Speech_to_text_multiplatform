@@ -35,15 +35,32 @@ pub(super) fn recognition_apply_closes_and_saves() {
     assert!(app.preferences.stt_apply.is_sensitive());
     app.preferences.language.dropdown.set_selected(1);
     app.preferences.window.set_visible(true);
+    let before_apply = app.settings_writer.borrow().submitted_count();
     app.preferences.stt_apply.emit_clicked();
     assert!(!app.preferences.window.is_visible());
+    assert_eq!(
+        app.settings_writer.borrow().submitted_count(),
+        before_apply + 1
+    );
     assert_eq!(app.settings.borrow().language.as_deref(), Some("it"));
+
+    app.preferences.window.set_visible(true);
+    app.preferences.language.dropdown.set_selected(0); // English
+    let before_close = app.settings_writer.borrow().submitted_count();
+    app.preferences.window.close();
+    assert!(!app.preferences.window.is_visible());
+    assert_eq!(
+        app.settings_writer.borrow().submitted_count(),
+        before_close + 1
+    );
+    assert_eq!(app.settings.borrow().language.as_deref(), Some("en"));
 
     let (_tx, events) = mpsc::sync_channel(1);
     app.preferences
         .llm_model
         .set_model(Some(&gtk::StringList::new(&["Select a model…", "chosen"])));
     app.preferences.llm_model.set_selected(1);
+    app.preferences.window.set_visible(true);
     app.apply_llm_with(|_, _, _| crate::llm::Job {
         events,
         cancel: Arc::new(AtomicBool::new(false)),
