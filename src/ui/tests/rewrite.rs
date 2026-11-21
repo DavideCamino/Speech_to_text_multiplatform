@@ -240,16 +240,30 @@ pub(super) fn refresh_models_populates_only_current_server_results() {
         .activatable_widget()
         .and_downcast::<gtk::MenuButton>()
         .unwrap();
-    let scroll = picker
-        .popover()
-        .unwrap()
+    let popover = picker.popover().unwrap();
+    assert!(popover.has_css_class("menu"));
+    let scroll = popover
         .child()
         .and_downcast::<gtk::ScrolledWindow>()
         .unwrap();
+    assert_eq!(scroll.measure(gtk::Orientation::Horizontal, -1).0, 320);
     let list = scroll.child().and_downcast::<gtk::ListView>().unwrap();
     list.emit_by_name::<()>("activate", &[&0_u32]);
     assert_list(&["first", "last"], Some("first"));
-    assert_eq!(picker.label().as_deref(), Some("first"));
+    let label = picker.child().and_downcast::<gtk::Label>().unwrap();
+    assert_eq!(label.text(), "first");
+    let size = || {
+        let width = picker.measure(gtk::Orientation::Horizontal, -1);
+        let height = picker.measure(gtk::Orientation::Vertical, width.1);
+        (width, height)
+    };
+    let short_size = size();
+    let long_model = "namespace/a-very-long-model-name-that-would-otherwise-wrap-to-several-lines";
+    discover_models(&app, &["first", long_model]);
+    list.emit_by_name::<()>("activate", &[&1_u32]);
+    assert_list(&["first", long_model], Some(long_model));
+    assert_eq!(picker.tooltip_text().as_deref(), Some(long_model));
+    assert_eq!(size(), short_size);
 
     let (tx, _) = begin_model_refresh(&app);
     tx.send(model_list(&["partial response"])).unwrap();

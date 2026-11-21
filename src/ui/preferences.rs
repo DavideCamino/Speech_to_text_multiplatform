@@ -225,42 +225,83 @@ fn llm_model_picker(saved_model: Option<&str>) -> (adw::ActionRow, gtk::SingleSe
     }
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
-        let label = gtk::Label::builder().xalign(0.0).selectable(false).build();
-        item.downcast_ref::<gtk::ListItem>()
-            .unwrap()
-            .set_child(Some(&label));
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        let label = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .single_line_mode(true)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .build();
+        let check = gtk::Image::from_icon_name("object-select-symbolic");
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row.append(&label);
+        row.append(&check);
+        item.set_child(Some(&row));
+        item.bind_property("selected", &check, "opacity")
+            .transform_to(|_, selected: bool| Some(if selected { 1.0 } else { 0.0 }))
+            .sync_create()
+            .build();
     });
     factory.connect_bind(|_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let label = item.child().and_downcast::<gtk::Label>().unwrap();
-        let id = item.item().and_downcast::<gtk::StringObject>().unwrap();
-        label.set_label(&id.string());
+        let label = item
+            .child()
+            .unwrap()
+            .first_child()
+            .and_downcast::<gtk::Label>()
+            .unwrap();
+        let id = item
+            .item()
+            .and_downcast::<gtk::StringObject>()
+            .unwrap()
+            .string();
+        label.set_label(&id);
+        label.set_tooltip_text(Some(&id));
     });
     let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
     list.set_single_click_activate(true);
     let scroll = gtk::ScrolledWindow::builder()
-        .min_content_width(220)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        // GTK ignores min_content_width when horizontal scrolling is disabled.
+        .width_request(320)
         .max_content_height(300)
         .propagate_natural_height(true)
         .child(&list)
         .build();
-    let popover = gtk::Popover::builder().child(&scroll).build();
+    // Use the same native menu styling as ComboRow, with no separate list background.
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .child(&scroll)
+        .build();
+    popover.add_css_class("menu");
+    // Reserve a constant amount of space, regardless of the model ID length.
+    let label = gtk::Label::builder()
+        .single_line_mode(true)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .width_chars(20)
+        .max_width_chars(20)
+        .build();
     let button = gtk::MenuButton::builder()
         .valign(Align::Center)
         .popover(&popover)
         .always_show_arrow(true)
-        .tooltip_text("Choose an LLM model")
-        .label(saved_model.unwrap_or("Choose a model"))
+        .child(&label)
         .build();
     let weak_button = button.downgrade();
     selection.connect_selected_item_notify(move |selection| {
         if let Some(button) = weak_button.upgrade() {
+            let label = button.child().and_downcast::<gtk::Label>().unwrap();
             let id = selection
                 .selected_item()
-                .and_downcast::<gtk::StringObject>();
-            button.set_label(&id.map_or_else(|| "Choose a model".into(), |id| id.string()));
+                .and_downcast::<gtk::StringObject>()
+                .map(|id| id.string());
+            let text = id.as_deref().unwrap_or("Choose a model");
+            label.set_label(text);
+            button.set_tooltip_text(Some(text));
+            button.update_property(&[gtk::accessible::Property::Label(text)]);
         }
     });
+    selection.notify("selected-item");
     let weak_popover = popover.downgrade();
     list.connect_activate(move |list, position| {
         if let Some(selection) = list.model().and_downcast::<gtk::SingleSelection>() {
