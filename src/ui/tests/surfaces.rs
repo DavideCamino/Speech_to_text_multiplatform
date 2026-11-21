@@ -3,14 +3,37 @@ use crate::{
     settings::Settings,
     transcription,
     ui::{
-        menu, preferences, text_zoom,
+        dialogs, menu, preferences, text_zoom,
         views::{RewriteView, buffer_text},
     },
 };
 use adw::prelude::*;
 use std::rc::Rc;
 
+fn model_chooser_filters() {
+    let chooser = dialogs::model_chooser();
+    let model_filter = chooser.default_filter().expect("default model filter");
+    let info = gtk::gio::FileInfo::new();
+    for name in ["model.bin", "model.BIN", "model.BiN", "recording.wav"] {
+        info.set_name(name);
+        info.set_display_name(name);
+        assert_eq!(
+            model_filter.match_(&info),
+            name != "recording.wav",
+            "{name}"
+        );
+    }
+    let filters = chooser.filters().expect("model chooser filters");
+    let all = filters
+        .item(1)
+        .and_downcast::<gtk::FileFilter>()
+        .expect("All files fallback");
+    assert_eq!(all.name().as_deref(), Some("All files"));
+    assert!(all.match_(&info));
+}
+
 pub(super) fn settings_pages_and_menu_surfaces(parent: &adw::ApplicationWindow) {
+    model_chooser_filters();
     let compiled = transcription::compiled_gpu_backends();
     let settings = Settings {
         gpu_backend: compiled.last().copied(),

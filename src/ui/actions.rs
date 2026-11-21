@@ -125,7 +125,7 @@ impl App {
         });
         on_click(&self.models.browse, self, |app| {
             let weak = Rc::downgrade(&app);
-            dialogs::open(&app.models.window, true, move |path| {
+            dialogs::open_model(&app.models.window, move |path| {
                 if let Some(app) = weak.upgrade() {
                     app.ask_import(path);
                 }

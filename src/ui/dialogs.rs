@@ -60,35 +60,26 @@ pub fn confirm_close(
     dialog.present();
 }
 
-pub fn open(window: &impl IsA<gtk::Window>, model: bool, action: impl Fn(PathBuf) + 'static) {
+pub(super) fn model_chooser() -> gtk::FileDialog {
     let filter = gtk::FileFilter::new();
-    if model {
-        filter.set_name(Some("Whisper ggml models"));
-        filter.add_pattern("*.bin");
-    } else {
-        filter.set_name(Some("Audio files"));
-        for extension in ["wav", "mp3", "flac", "ogg", "m4a"] {
-            filter.add_pattern(&format!("*.{extension}"));
-            filter.add_pattern(&format!("*.{}", extension.to_uppercase()));
-        }
-    }
+    filter.set_name(Some("Whisper ggml models"));
+    filter.add_suffix("bin");
     let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     let all = gtk::FileFilter::new();
     all.set_name(Some("All files"));
     all.add_pattern("*");
     filters.append(&all);
-    let dialog = gtk::FileDialog::builder()
-        .title(if model {
-            "Select Whisper Model"
-        } else {
-            "Open Audio"
-        })
+    gtk::FileDialog::builder()
+        .title("Select Whisper Model")
         .filters(&filters)
         .default_filter(&filter)
-        .build();
+        .build()
+}
+
+pub fn open_model(window: &impl IsA<gtk::Window>, action: impl Fn(PathBuf) + 'static) {
     let parent = window.as_ref().clone();
-    dialog.open(
+    model_chooser().open(
         Some(window),
         None::<&gtk::gio::Cancellable>,
         move |result| match result {
