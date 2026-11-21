@@ -173,10 +173,34 @@ impl App {
         on_click(&self.preferences.llm_test, self, |app| app.test_llm());
         on_click(&self.preferences.llm_refresh, self, |app| app.test_llm());
         on_click(&self.preferences.llm_apply, self, |app| app.apply_llm());
-        for row in [&self.preferences.llm_model, &self.preferences.llm_reasoning] {
+        for entry in [
+            self.preferences.llm_host.upcast_ref::<gtk::Editable>(),
+            self.preferences.llm_port.upcast_ref::<gtk::Editable>(),
+            self.preferences.llm_token.upcast_ref::<gtk::Editable>(),
+        ] {
+            let weak = Rc::downgrade(self);
+            entry.connect_changed(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.llm_selection_changed();
+                }
+            });
+        }
+        let weak = Rc::downgrade(self);
+        self.preferences.llm_https.connect_active_notify(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.llm_selection_changed();
+            }
+        });
+        for (row, changes_load_target) in [
+            (&self.preferences.llm_model, true),
+            (&self.preferences.llm_reasoning, false),
+        ] {
             let weak = Rc::downgrade(self);
             row.connect_selected_notify(move |_| {
                 if let Some(app) = weak.upgrade() {
+                    if changes_load_target {
+                        app.llm_selection_changed();
+                    }
                     app.settings.borrow_mut().llm_options = app.llm_options();
                     app.persist();
                     app.refresh();
@@ -188,7 +212,7 @@ impl App {
             app.stack.set_visible_child_name("main")
         });
         on_click(&self.rewrite.run, self, |app| {
-            if app.busy() {
+            if !app.can_start_llm_task() {
                 return;
             }
             let run = |app: &App| app.start_rewrite();

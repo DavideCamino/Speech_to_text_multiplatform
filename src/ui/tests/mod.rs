@@ -48,6 +48,7 @@ fn settings_pages_and_menu_surfaces_build() {
     lifecycle::closing_with_defaults_preserves_malformed_preferences_backup();
     preferences::recognition_apply_closes_and_saves();
     rewrite::rewrite_generation_states();
+    rewrite::model_loading_controls_and_readiness_follow_selection();
     transcription::incremental_transcript_updates();
     markdown_buffer::test_markdown_buffer();
     markdown_buffer::test_markdown_scrolling();

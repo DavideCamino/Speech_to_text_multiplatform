@@ -369,7 +369,10 @@ pub(super) fn lifecycle_job_ownership() {
     respond_to_close(&close_dialog(&app), "close");
     assert!(cancel.load(Ordering::Relaxed) && test_cancel.load(Ordering::Relaxed));
     assert!(!app.session.borrow().is_running());
-    assert!(!app.rewrite_state.borrow().operation.is_testing());
+    assert!(matches!(
+        app.rewrite_state.borrow().operation,
+        RewriteOperation::Idle
+    ));
     assert_eq!(app.lifecycle.get(), WindowLifecycle::SavingBeforeClose);
     wait_for_background("window lifecycle transition", || {
         app.poll_preferences_save();

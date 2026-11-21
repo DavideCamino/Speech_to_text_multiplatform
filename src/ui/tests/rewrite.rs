@@ -65,7 +65,10 @@ pub(super) fn rewrite_generation_states() {
     assert!(!app.rewrite.run.is_sensitive() && !app.preferences.llm_test.is_sensitive());
     app.start_rewrite();
     app.test_llm();
-    assert!(app.rewrite_state.borrow().operation.is_testing());
+    assert!(matches!(
+        app.rewrite_state.borrow().operation,
+        RewriteOperation::TestingConnection(_)
+    ));
     assert!(!test_cancel.load(Ordering::Relaxed));
     tested
         .send(llm::Event::Models(vec![
@@ -186,25 +189,132 @@ pub(super) fn rewrite_generation_states() {
     assert!(app.rewrite_markdown().is_empty());
     assert!(buffer_text(&app.rewrite.result).is_empty());
     assert!(!app.rewrite.copy.is_sensitive());
-    // Applying uses a separate loading operation and keeps Rewrite disabled.
-    let (loaded, events) = mpsc::sync_channel(2);
-    app.rewrite_state.borrow_mut().operation = RewriteOperation::LoadingModel(llm::Job {
-        events,
-        cancel: Arc::new(AtomicBool::new(false)),
-    });
+    app.window.destroy();
+}
+
+pub(super) fn model_loading_controls_and_readiness_follow_selection() {
+    use crate::{
+        llm, transcription,
+        ui::transcription_controller::{SessionSource, TranscriptionSession},
+    };
+    let app = test_app();
+    app.connect();
+    app.preferences
+        .llm_model
+        .set_model(Some(&gtk::StringList::new(&[
+            "Select a model…",
+            "chosen",
+            "other",
+        ])));
+    app.preferences.llm_model.set_selected(1);
     app.refresh();
-    assert!(app.busy());
-    assert!(!app.rewrite.run.is_sensitive());
+    assert!(app.preferences.llm_apply.is_sensitive());
+    let (_events, receiver) = mpsc::sync_channel(1);
+    *app.session.borrow_mut() = TranscriptionSession::Running {
+        source: SessionSource::Microphone,
+        job: transcription::Job {
+            events: receiver,
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        },
+    };
+    app.refresh();
     assert!(!app.preferences.llm_apply.is_sensitive());
-    assert!(!app.preferences.llm_model.is_sensitive());
-    loaded
-        .send(llm::Event::Finished(Ok("Model ready: chosen".into())))
-        .unwrap();
-    app.poll_rewrite();
-    assert!(!app.busy());
-    assert!(app.rewrite.run.is_sensitive());
-    assert_eq!(app.main.status.text(), "Model ready: chosen");
-    assert_eq!(app.rewrite.status.text(), "Model ready: chosen");
+    assert!(app.preferences.llm_test.is_sensitive() && app.preferences.llm_refresh.is_sensitive());
+    app.apply_llm_with(|_, _, _| panic!("Apply must not start while transcribing"));
+    app.session.borrow_mut().finish();
+    app.refresh();
+
+    let start_load = || {
+        let (tx, events) = mpsc::sync_channel(2);
+        let expected_server = app.llm_connection().unwrap();
+        let expected_model = app.llm_options().model;
+        app.apply_llm_with(move |server, _, options| {
+            assert_eq!(server, expected_server);
+            assert_eq!(options.model, expected_model);
+            llm::Job {
+                events,
+                cancel: Arc::new(AtomicBool::new(false)),
+            }
+        });
+        assert!(app.rewrite_state.borrow().operation.is_loading());
+        tx
+    };
+    let complete_load = |tx: mpsc::SyncSender<llm::Event>| {
+        tx.send(llm::Event::Finished(Ok("load completed".into())))
+            .unwrap();
+        app.poll_rewrite();
+        assert!(!app.busy());
+        assert!(app.rewrite.run.is_sensitive());
+    };
+    app.window.present();
+    app.preferences.window.present();
+    let load = start_load();
+    assert!(!app.preferences.window.is_visible());
+    app.preferences.window.present();
+    assert!(app.preferences.window.is_visible());
+    for widget in [
+        app.preferences.llm_host.upcast_ref::<gtk::Widget>(),
+        app.preferences.llm_port.upcast_ref(),
+        app.preferences.llm_https.upcast_ref(),
+        app.preferences.llm_token.upcast_ref(),
+        app.preferences.llm_test.upcast_ref(),
+        app.preferences.llm_refresh.upcast_ref(),
+        app.preferences.llm_model.upcast_ref(),
+        app.preferences.llm_reasoning.upcast_ref(),
+        app.preferences.llm_apply.upcast_ref(),
+        app.rewrite.run.upcast_ref(),
+    ] {
+        assert!(!widget.is_sensitive());
+    }
+    app.test_llm(); // A programmatic activation must not replace the load job.
+    assert!(app.rewrite_state.borrow().operation.is_loading());
+    complete_load(load);
+    let assert_ready = |expected: &str| {
+        assert_eq!(app.main.status.text(), expected);
+        assert_eq!(app.rewrite.status.text(), expected);
+        assert_eq!(
+            app.preferences.llm_status.subtitle().as_deref(),
+            Some(expected)
+        );
+    };
+    assert_ready("Model ready: chosen");
+
+    app.preferences.llm_reasoning.set_selected(1);
+    assert_ready("Model ready: chosen"); // Reasoning does not select another model.
+    app.main.status.set_text("Unrelated progress");
+    app.preferences.llm_host.set_text("localhost");
+    assert_eq!(app.main.status.text(), "Unrelated progress");
+    assert!(app.rewrite.status.text().contains("LLM settings changed"));
+    assert!(
+        app.preferences
+            .llm_status
+            .subtitle()
+            .unwrap()
+            .contains("LLM settings changed")
+    );
+    complete_load(start_load());
+    assert_ready("Model ready: chosen");
+    app.preferences.llm_model.set_selected(2);
+    assert!(app.main.status.text().contains("LLM settings changed"));
+
+    let stale_load = start_load();
+    // Normal editing is disabled. Simulate an out-of-band change to make
+    // sure even an already queued completion cannot mark it as ready.
+    app.preferences.llm_model.set_selected(1);
+    complete_load(stale_load);
+    assert!(app.main.status.text().contains("LLM settings changed"));
+    assert!(
+        !app.preferences
+            .llm_status
+            .subtitle()
+            .unwrap()
+            .contains("Model ready")
+    );
+    complete_load(start_load());
+    assert_ready("Model ready: chosen");
+    app.preferences.llm_token.set_text("changed-in-session");
+    assert!(app.main.status.text().contains("LLM settings changed"));
     app.window.destroy();
 }
 

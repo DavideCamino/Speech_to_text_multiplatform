@@ -40,12 +40,14 @@ pub(super) fn recognition_apply_closes_and_saves() {
     assert_eq!(app.settings.borrow().language.as_deref(), Some("it"));
 
     let (_tx, events) = mpsc::sync_channel(1);
-    app.rewrite_state.borrow_mut().operation =
-        crate::ui::rewrite::RewriteOperation::LoadingModel(crate::llm::Job {
-            events,
-            cancel: Arc::new(AtomicBool::new(false)),
-        });
-    app.refresh();
+    app.preferences
+        .llm_model
+        .set_model(Some(&gtk::StringList::new(&["Select a model…", "chosen"])));
+    app.preferences.llm_model.set_selected(1);
+    app.apply_llm_with(|_, _, _| crate::llm::Job {
+        events,
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
     assert!(!app.preferences.stt_apply.is_sensitive());
     app.discard_active_work();
     app.window.destroy();

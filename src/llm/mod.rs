@@ -50,7 +50,7 @@ pub struct Options {
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Connection {
     pub host: String,

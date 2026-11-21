@@ -1,5 +1,5 @@
 //! Rewrite lifecycle and batched native TextBuffer Markdown rendering.
-use super::{app::App, dialogs, views::buffer_text};
+use super::{app::App, dialogs, lifecycle::WindowLifecycle, views::buffer_text};
 use crate::llm;
 use adw::prelude::*;
 use std::{
@@ -7,19 +7,37 @@ use std::{
     sync::{atomic::Ordering, mpsc},
 };
 
+const MODEL_LOADING: &str = "Loading selected model…";
+const SELECTION_CHANGED: &str = "LLM settings changed. Click Apply to load the selected model.";
+
+pub(super) struct LoadTarget {
+    connection: llm::Connection,
+    model: String,
+    selection_revision: u64,
+}
+
+impl LoadTarget {
+    fn ready_message(&self) -> String {
+        format!("Model ready: {}", self.model)
+    }
+}
+
 #[derive(Default)]
 pub(super) enum RewriteOperation {
     #[default]
     Idle,
     TestingConnection(llm::Job),
-    LoadingModel(llm::Job),
+    LoadingModel {
+        job: llm::Job,
+        target: LoadTarget,
+    },
     Generating(llm::Job),
 }
 
 impl RewriteOperation {
     fn connection_job(&self) -> Option<&llm::Job> {
         match self {
-            Self::TestingConnection(job) | Self::LoadingModel(job) => Some(job),
+            Self::TestingConnection(job) | Self::LoadingModel { job, .. } => Some(job),
             _ => None,
         }
     }
@@ -35,12 +53,8 @@ impl RewriteOperation {
         self.generation_job().is_some()
     }
 
-    pub(super) fn is_testing(&self) -> bool {
-        self.connection_job().is_some()
-    }
-
     pub(super) fn is_loading(&self) -> bool {
-        matches!(self, Self::LoadingModel(_))
+        matches!(self, Self::LoadingModel { .. })
     }
 
     fn is_idle(&self) -> bool {
@@ -73,6 +87,10 @@ impl RewriteOperation {
 #[derive(Default)]
 pub(super) struct State {
     pub(super) operation: RewriteOperation,
+    // Incremented when the selection changes, including credentials. No
+    // session token is duplicated in readiness state or status messages.
+    selection_revision: u64,
+    ready_model: Option<LoadTarget>,
     markdown: String,
     unexported: bool,
 }
@@ -101,6 +119,7 @@ impl State {
 
     pub(super) fn restore(&mut self, snapshot: &crate::recovery::RewriteSnapshot) {
         self.operation = RewriteOperation::Idle;
+        self.ready_model = None;
         self.markdown.clone_from(&snapshot.markdown);
         self.unexported = snapshot.dirty;
     }
@@ -184,18 +203,26 @@ impl App {
         self.refresh();
     }
 
+    fn can_use_llm_settings(&self) -> bool {
+        self.lifecycle.get() == WindowLifecycle::Open
+            && self.rewrite_state.borrow().operation.is_idle()
+    }
+
+    pub(super) fn can_start_llm_task(&self) -> bool {
+        self.can_use_llm_settings() && !self.busy()
+    }
+
     pub(super) fn refresh_rewrite_controls(&self) {
-        let busy = self.busy();
-        let (generating, testing, can_stop, has_result) = {
+        let (generating, can_stop, has_result) = {
             let state = self.rewrite_state.borrow();
             (
                 state.operation.is_generating(),
-                state.operation.is_testing(),
                 state.operation.can_stop(),
                 !state.markdown.trim().is_empty(),
             )
         };
-        let connection_editable = !generating && !testing;
+        let connection_editable = self.can_use_llm_settings();
+        let can_start_task = self.can_start_llm_task();
         self.preferences.llm_host.set_sensitive(connection_editable);
         self.preferences.llm_port.set_sensitive(connection_editable);
         self.preferences
@@ -216,8 +243,8 @@ impl App {
             .set_sensitive(connection_editable);
         self.preferences
             .llm_apply
-            .set_sensitive(connection_editable && self.llm_options().model.is_some());
-        self.rewrite.run.set_sensitive(!busy && !testing);
+            .set_sensitive(can_start_task && self.llm_options().model.is_some());
+        self.rewrite.run.set_sensitive(can_start_task);
         self.rewrite.prompt.set_editable(!generating);
         self.rewrite.back.set_sensitive(!generating);
         self.rewrite.stop.set_sensitive(can_stop);
@@ -261,17 +288,48 @@ impl App {
         }
     }
 
+    pub(super) fn llm_selection_changed(&self) {
+        let ready = {
+            let mut state = self.rewrite_state.borrow_mut();
+            state.selection_revision = state.selection_revision.wrapping_add(1);
+            state.ready_model.take()
+        };
+        if let Some(ready) = ready {
+            self.replace_model_status(&ready.ready_message(), SELECTION_CHANGED);
+        }
+    }
+
+    // Only replace labels that still show the model's previous status; other
+    // jobs may have taken over the shared main/rewrite labels in the meantime.
+    fn replace_model_status(&self, previous: &str, next: &str) {
+        if self.preferences.llm_status.subtitle().as_deref() == Some(previous) {
+            self.preferences.llm_status.set_subtitle(next);
+        }
+        for label in [&self.main.status, &self.rewrite.status] {
+            if label.text() == previous {
+                label.set_text(next);
+            }
+        }
+    }
+
     pub(super) fn apply_llm(&self) {
-        if self.busy() || !self.rewrite_state.borrow().operation.is_idle() {
+        self.apply_llm_with(llm::start_loading);
+    }
+
+    pub(super) fn apply_llm_with(
+        &self,
+        start: impl FnOnce(llm::Connection, String, llm::Options) -> llm::Job,
+    ) {
+        if !self.can_start_llm_task() {
             return;
         }
         let options = self.llm_options();
-        if options.model.is_none() {
+        let Some(model) = options.model.clone() else {
             self.preferences
                 .llm_status
                 .set_subtitle("Select a model first.");
             return;
-        }
+        };
         let connection = match self.llm_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -280,23 +338,30 @@ impl App {
             }
         };
         self.persist_controls();
-        self.rewrite_state.borrow_mut().operation =
-            RewriteOperation::LoadingModel(llm::start_loading(
-                connection,
-                self.preferences.llm_token.text().to_string(),
-                options,
-            ));
-        self.preferences
-            .llm_status
-            .set_subtitle("Loading selected model…");
-        self.rewrite.status.set_text("Loading selected model…");
-        self.main.status.set_text("Loading LLM model…");
+        let target = LoadTarget {
+            connection: connection.clone(),
+            model,
+            selection_revision: self.rewrite_state.borrow().selection_revision,
+        };
+        let job = start(
+            connection,
+            self.preferences.llm_token.text().to_string(),
+            options,
+        );
+        {
+            let mut state = self.rewrite_state.borrow_mut();
+            state.ready_model = None;
+            state.operation = RewriteOperation::LoadingModel { job, target };
+        }
+        self.preferences.llm_status.set_subtitle(MODEL_LOADING);
+        self.rewrite.status.set_text(MODEL_LOADING);
+        self.main.status.set_text(MODEL_LOADING);
         self.preferences.window.close();
         self.refresh();
     }
 
     pub(super) fn test_llm(&self) {
-        if !self.rewrite_state.borrow().operation.is_idle() {
+        if !self.can_use_llm_settings() {
             return;
         }
         match self.llm_connection() {
@@ -317,7 +382,7 @@ impl App {
         }
     }
     pub(super) fn start_rewrite(&self) {
-        if self.busy() || self.rewrite_state.borrow().operation.is_testing() {
+        if !self.can_start_llm_task() {
             return;
         }
         let prompt = buffer_text(&self.rewrite.prompt);
@@ -401,19 +466,14 @@ impl App {
                 );
             }
             if let llm::Event::Finished(result) = event {
-                let loading = self.rewrite_state.borrow().operation.is_loading();
-                self.rewrite_state.borrow_mut().operation.finish();
-                if loading {
-                    let status = match &result {
-                        Ok(message) => message.clone(),
-                        Err(error) => format!("Model loading failed: {error}"),
-                    };
-                    self.rewrite.status.set_text(&status);
-                    self.main.status.set_text(&status);
+                let operation = std::mem::take(&mut self.rewrite_state.borrow_mut().operation);
+                if let RewriteOperation::LoadingModel { target, .. } = operation {
+                    self.complete_model_load(target, result);
+                } else {
+                    self.preferences.llm_status.set_subtitle(
+                        &result.unwrap_or_else(|error| format!("Connection failed: {error}")),
+                    );
                 }
-                self.preferences
-                    .llm_status
-                    .set_subtitle(&result.unwrap_or_else(|e| format!("Connection failed: {e}")));
             }
         }
         let events = self
@@ -461,6 +521,24 @@ impl App {
             self.refresh();
         }
     }
+    fn complete_model_load(&self, target: LoadTarget, result: Result<String, String>) {
+        let current = target.selection_revision == self.rewrite_state.borrow().selection_revision
+            && self
+                .llm_connection()
+                .is_ok_and(|connection| connection == target.connection)
+            && self.llm_options().model.as_deref() == Some(target.model.as_str());
+        let status = if !current {
+            SELECTION_CHANGED.to_owned()
+        } else if let Err(error) = result {
+            format!("Model loading failed: {error}")
+        } else {
+            let message = target.ready_message();
+            self.rewrite_state.borrow_mut().ready_model = Some(target);
+            message
+        };
+        self.replace_model_status(MODEL_LOADING, &status);
+    }
+
     pub(super) fn rewrite_markdown(&self) -> String {
         self.rewrite_state.borrow().markdown.clone()
     }
@@ -526,7 +604,7 @@ mod tests {
             } else {
                 RewriteOperation::Generating(job)
             };
-            assert_eq!(operation.is_testing(), testing);
+            assert_eq!(operation.connection_job().is_some(), testing);
             assert_eq!(operation.is_generating(), !testing);
             assert!(!operation.finish(), "normal completion is not cancellation");
             assert!(cancel.load(Ordering::Relaxed));
