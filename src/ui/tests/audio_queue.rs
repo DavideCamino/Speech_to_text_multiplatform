@@ -1,5 +1,5 @@
 //! Queue interactions and sequential jobs use deterministic worker channels.
-use super::support::test_app;
+use super::support::{test_app, wait_for_background};
 use crate::{
     transcript::Segment,
     transcription::{Completion, Event, Job, Source},
@@ -111,8 +111,10 @@ pub(super) fn queue_interactions() {
     assert!(!drop_file(&drop_target(&app, 1), revision, 0));
     buttons(&app, 0).2.emit_clicked(); // signal emission cannot bypass busy guard
     assert_eq!(app.audio_queue.borrow().files.len(), 2);
+    let tx = fake_job(&app);
     app.request_cancel();
-    app.session.borrow_mut().finish();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
+    app.poll_transcription();
     assert!(app.audio_queue.borrow().files.is_empty());
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
     app.window.destroy();
@@ -128,7 +130,12 @@ fn confirmation() -> adw::MessageDialog {
 
 pub(super) fn sequential_batch() {
     let app = ready();
-    app.main.transcript.buffer().set_text("Existing text.");
+    app.document.accept_final(vec![Segment {
+        start_ms: 0,
+        end_ms: 2000,
+        text: "Existing text.".into(),
+    }]);
+    app.document.render();
     app.queue_audios(vec![
         "one.wav".into(),
         "empty.wav".into(),
@@ -161,8 +168,10 @@ pub(super) fn sequential_batch() {
     assert_eq!(app.main.progress.fraction(), 0.5);
     assert!(app.main.file_progress.text().contains("remaining"));
     assert!(!app.main.file_progress.text().contains("Calculating"));
-    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
+    tx.send(Event::FileFinished(Ok(Completion::Complete)))
+        .unwrap();
     app.poll_transcription();
+    assert!(app.session.borrow().is_running());
     assert_eq!(app.audio_queue.borrow().batch.as_ref().unwrap().index, 1);
     assert!(app.main.file_progress.text().starts_with("File 2 of 3"));
     assert_eq!(app.main.progress.fraction(), 0.0);
@@ -175,12 +184,12 @@ pub(super) fn sequential_batch() {
                 |d| d.heading().as_deref() == Some("Start a new transcription?") && d.is_visible()
             )
     );
-    let tx = fake_job(&app);
-    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap(); // empty file adds no separator
+    // The same worker/channel completes the empty file and starts the next.
+    tx.send(Event::FileFinished(Ok(Completion::Complete)))
+        .unwrap();
     app.poll_transcription();
     assert_eq!(buffer_text(&app.main.transcript), "Existing text. One.");
     assert!(app.main.file_progress.text().starts_with("File 3 of 3"));
-    let tx = fake_job(&app);
     tx.send(Event::Provisional(" Three?".into())).unwrap();
     app.poll_transcription();
     assert_eq!(
@@ -188,11 +197,13 @@ pub(super) fn sequential_batch() {
         "Existing text. One.\n\nThree?"
     );
     tx.send(Event::Final(vec![Segment {
-        start_ms: 1000,
-        end_ms: 2000,
+        start_ms: 0,
+        end_ms: 1000,
         text: " Three.".into(),
     }]))
     .unwrap();
+    tx.send(Event::FileFinished(Ok(Completion::Complete)))
+        .unwrap();
     tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert_eq!(
@@ -202,7 +213,7 @@ pub(super) fn sequential_batch() {
     assert!(
         app.document
             .srt()
-            .contains("00:00:01,000 --> 00:00:02,000\nThree.")
+            .contains("00:00:03,000 --> 00:00:04,000\nThree.")
     );
     assert!(!app.session.borrow().is_running());
     assert!(app.audio_queue.borrow().files.is_empty());
@@ -231,7 +242,7 @@ pub(super) fn batch_failures_and_cancel() {
         text: "Kept.".into(),
     }]))
     .unwrap();
-    tx.send(Event::Finished(Err("decode failed".into())))
+    tx.send(Event::FileFinished(Err("decode failed".into())))
         .unwrap();
     app.poll_transcription();
     assert_eq!(app.audio_queue.borrow().batch.as_ref().unwrap().index, 1);
@@ -245,16 +256,16 @@ pub(super) fn batch_failures_and_cancel() {
             .len(),
         1
     );
-    let tx = fake_job(&app);
-    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
-    app.poll_transcription();
-    let tx = fake_job(&app);
+    tx.send(Event::FileFinished(Ok(Completion::Complete)))
+        .unwrap();
     tx.send(Event::Final(vec![Segment {
-        start_ms: 1000,
-        end_ms: 2000,
+        start_ms: 0,
+        end_ms: 1000,
         text: "Next.".into(),
     }]))
     .unwrap();
+    tx.send(Event::FileFinished(Ok(Completion::Complete)))
+        .unwrap();
     tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert_eq!(buffer_text(&app.main.transcript), "Kept.\n\nNext.");
@@ -277,14 +288,24 @@ pub(super) fn batch_failures_and_cancel() {
         text: "Finalized.".into(),
     }]))
     .unwrap();
-    tx.send(Event::Provisional(" unfinished".into())).unwrap();
-    app.poll_transcription();
-    app.request_cancel();
-    tx.send(Event::Finished(Ok(Completion::IncompleteFile)))
+    tx.send(Event::FileFinished(Ok(Completion::IncompleteFile)))
         .unwrap();
+    tx.send(Event::Final(vec![Segment {
+        start_ms: 0,
+        end_ms: 1000,
+        text: "Already queued.".into(),
+    }]))
+    .unwrap();
+    tx.send(Event::Provisional(" unfinished".into())).unwrap();
+    app.request_cancel();
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert!(batch_dialogs(&app).is_empty());
-    assert_eq!(buffer_text(&app.main.transcript), "Finalized.");
+    assert_eq!(
+        buffer_text(&app.main.transcript),
+        "Finalized.\n\nAlready queued."
+    );
+    assert_eq!(app.document.end_ms(), 2000);
     assert!(!app.session.borrow().is_running());
     assert!(app.audio_queue.borrow().files.is_empty());
     assert!(paths.iter().all(|path| path.exists()));
@@ -312,6 +333,7 @@ pub(super) fn incomplete_batch_warns_only_after_final_file() {
     .map(std::path::PathBuf::from);
     app.queue_audios(paths.to_vec());
     app.start(Source::File(paths[0].clone()), false);
+    let tx = fake_job(&app);
     for (i, (result, text)) in [
         (Ok(Completion::IncompleteFile), "First readable part."),
         (Err("decode failed".into()), ""),
@@ -322,22 +344,20 @@ pub(super) fn incomplete_batch_warns_only_after_final_file() {
     .enumerate()
     {
         assert_eq!(app.audio_queue.borrow().selected(), Some(&paths[i]));
-        let tx = fake_job(&app);
         if !text.is_empty() {
-            let start_ms = app.document.end_ms();
             tx.send(Event::Final(vec![Segment {
-                start_ms,
-                end_ms: start_ms + 1000,
+                start_ms: 0,
+                end_ms: 1000,
                 text: text.into(),
             }]))
             .unwrap();
         }
-        tx.send(Event::Finished(result)).unwrap();
+        tx.send(Event::FileFinished(result)).unwrap();
         app.poll_transcription();
-        if i + 1 < paths.len() {
-            assert!(batch_dialogs(&app).is_empty());
-        }
+        assert!(batch_dialogs(&app).is_empty());
     }
+    tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
+    app.poll_transcription();
     let dialogs = batch_dialogs(&app);
     assert_eq!(dialogs.len(), 1);
     let warning = &dialogs[0];
@@ -353,6 +373,30 @@ pub(super) fn incomplete_batch_warns_only_after_final_file() {
     assert!(app.audio_queue.borrow().files.is_empty());
     assert!(!app.session.borrow().is_running());
     warning.close();
+    app.window.destroy();
+}
+
+pub(super) fn batch_model_failure_ends_the_queue_once() {
+    let app = ready();
+    app.queue_audios(vec!["one.wav".into(), "two.wav".into()]);
+    app.start_selected_source(); // No model configured: the real worker fails before opening audio.
+    wait_for_background("batch setup failure", || {
+        app.poll_transcription();
+        !app.session.borrow().is_running()
+    });
+    let dialogs = batch_dialogs(&app);
+    assert_eq!(dialogs.len(), 1);
+    assert_eq!(
+        dialogs[0].heading().as_deref(),
+        Some("Transcription failed")
+    );
+    assert!(
+        dialogs[0]
+            .body()
+            .contains("Select or download a Whisper model first")
+    );
+    assert!(app.audio_queue.borrow().files.is_empty());
+    dialogs[0].close();
     app.window.destroy();
 }
 

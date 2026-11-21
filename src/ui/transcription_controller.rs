@@ -122,9 +122,15 @@ impl App {
     }
 
     pub(super) fn request_cancel(&self) {
-        let cleared_audio = !self.audio_queue.borrow().files.is_empty();
-        self.audio_queue.borrow_mut().clear();
         let transcribing = self.session.borrow().request_cancel();
+        let mut queue = self.audio_queue.borrow_mut();
+        let cleared_audio = !queue.files.is_empty();
+        // Keep offsets and boundaries until the terminal event, so any final
+        // cues already queued by the worker can still be applied correctly.
+        if !transcribing || queue.batch.is_none() {
+            queue.clear();
+        }
+        drop(queue);
         let downloading = self.model_state.borrow().operation.request_cancel();
         if !transcribing && !downloading {
             if cleared_audio {
@@ -205,47 +211,40 @@ impl App {
         if self.busy() {
             return;
         }
-        let continuation = self
-            .audio_queue
-            .borrow()
-            .batch
-            .as_ref()
-            .is_some_and(|batch| batch.index > 0);
         if !append {
             self.clear_transcript();
-        } else if continuation {
-            self.document.prepare_file_append();
         } else {
             self.document.prepare_append();
         }
         self.document.clear_provisional();
         self.render_transcript();
         let offset = self.document.end_ms();
-        let kind = match &source {
-            Source::File(_) => SessionSource::File,
-            Source::Microphone => SessionSource::Microphone,
-        };
-        {
-            let mut queue = self.audio_queue.borrow_mut();
-            match &source {
-                Source::File(path) => {
-                    if queue.selected() != Some(path) {
-                        queue.replace(vec![path.clone()]);
+        let settings = self.settings.borrow().clone();
+        let context = self.recognition_context();
+        let (kind, job) = match source {
+            Source::File(path) => {
+                let paths = {
+                    let mut queue = self.audio_queue.borrow_mut();
+                    if queue.selected() != Some(&path) {
+                        queue.replace(vec![path]);
                     }
-                    if queue.batch.is_none() {
-                        queue.begin();
-                    }
-                }
-                Source::Microphone => queue.clear(),
+                    queue.begin(offset);
+                    queue.files.iter().map(|file| file.path.clone()).collect()
+                };
+                (
+                    SessionSource::File,
+                    transcription::start_files(paths, settings, context),
+                )
             }
-        }
+            Source::Microphone => {
+                self.audio_queue.borrow_mut().clear();
+                (
+                    SessionSource::Microphone,
+                    transcription::start(Source::Microphone, settings, offset, context),
+                )
+            }
+        };
         self.main.progress.set_fraction(0.0);
-        let job = transcription::start(
-            source,
-            self.settings.borrow().clone(),
-            offset,
-            self.recognition_context(),
-        );
         *self.session.borrow_mut() = TranscriptionSession::Running { source: kind, job };
         self.refresh();
     }
@@ -277,7 +276,13 @@ impl App {
                     }
                     self.refresh_file_progress();
                 }
-                Event::Final(segments) => {
+                Event::Final(mut segments) => {
+                    if let Some(batch) = &self.audio_queue.borrow().batch {
+                        for segment in &mut segments {
+                            segment.start_ms = segment.start_ms.saturating_add(batch.offset_ms);
+                            segment.end_ms = segment.end_ms.saturating_add(batch.offset_ms);
+                        }
+                    }
                     transcript_changed |= self.document.accept_final(segments);
                 }
                 Event::Provisional(text) => {
@@ -295,6 +300,22 @@ impl App {
                         seconds as u64 % 60
                     ));
                 }
+                Event::FileFinished(result) => {
+                    // Render this file before preparing the next boundary. The
+                    // same poll can contain events from more than one file.
+                    self.document.clear_provisional();
+                    self.document.render();
+                    transcript_changed = false;
+                    let has_next = self
+                        .audio_queue
+                        .borrow_mut()
+                        .advance(&result, self.document.end_ms());
+                    if has_next {
+                        self.document.prepare_file_append();
+                        self.main.progress.set_fraction(0.0);
+                    }
+                    self.refresh();
+                }
                 Event::Finished(result) => {
                     let file = matches!(
                         *self.session.borrow(),
@@ -304,18 +325,9 @@ impl App {
                         }
                     );
                     let cancelled = self.session.borrow_mut().finish();
-                    // Flush this file before preparing the next boundary. Never
-                    // render a prior file's events into the next file's state.
                     self.document.clear_provisional();
-                    self.render_transcript();
+                    self.document.render();
                     transcript_changed = false;
-                    if file && !cancelled && self.lifecycle.get() == WindowLifecycle::Open {
-                        let next = self.audio_queue.borrow_mut().advance(&result);
-                        if let Some(path) = next {
-                            self.start(Source::File(path), true);
-                            continue;
-                        }
-                    }
                     let batch = if file {
                         let mut queue = self.audio_queue.borrow_mut();
                         let batch = queue.batch.take();
@@ -333,19 +345,13 @@ impl App {
                     } else if let Some(batch) = batch
                         .filter(|batch| !batch.incomplete.is_empty() || !batch.failures.is_empty())
                     {
-                        if batch.incomplete.is_empty() {
-                            self.main.status.set_text(
-                                "Batch finished with errors. Completed text has been kept.",
-                            );
-                            dialogs::message(
-                                &self.window,
+                        let (heading, status, mut body) = if batch.incomplete.is_empty() {
+                            (
                                 "Some audio files failed",
-                                &batch.failures.join("\n\n"),
-                            );
+                                "Batch finished with errors. Completed text has been kept.",
+                                batch.failures.join("\n\n"),
+                            )
                         } else {
-                            self.main.status.set_text(
-                                "Batch finished with incomplete audio. Recognized text has been kept.",
-                            );
                             let paths = batch
                                 .incomplete
                                 .iter()
@@ -359,8 +365,21 @@ impl App {
                                 body.push_str("\n\nOther files failed:\n");
                                 body.push_str(&batch.failures.join("\n\n"));
                             }
-                            dialogs::message(&self.window, "Incomplete audio files", &body);
+                            (
+                                "Incomplete audio files",
+                                "Batch finished with incomplete audio. Recognized text has been kept.",
+                                body,
+                            )
+                        };
+                        if let Err(error) = &result {
+                            self.main.status.set_text(
+                                "Batch stopped before completion. Recognized text has been kept.",
+                            );
+                            body.push_str(&format!("\n\nBatch stopped: {error}"));
+                        } else {
+                            self.main.status.set_text(status);
                         }
+                        dialogs::message(&self.window, heading, &body);
                     } else {
                         match result {
                             Ok(Completion::Complete) => {
@@ -425,7 +444,11 @@ impl App {
         };
         let cancelling = session_cancelling || self.model_state.borrow().operation.cancelling();
         let has_segments = self.document.has_segments();
-        let selected_audio = self.audio_queue.borrow().selected().cloned();
+        let selected_audio = if session_cancelling {
+            None
+        } else {
+            self.audio_queue.borrow().selected().cloned()
+        };
         let has_audio = selected_audio.is_some();
         self.main
             .record

@@ -24,7 +24,7 @@ use std::{
 pub(super) fn closing_discards_entire_audio_batch() {
     let app = test_app();
     app.queue_audios(vec!["first.wav".into(), "second.wav".into()]);
-    app.audio_queue.borrow_mut().begin();
+    app.audio_queue.borrow_mut().begin(0);
     let (tx, events) = mpsc::sync_channel(2);
     let cancel = Arc::new(AtomicBool::new(false));
     *app.session.borrow_mut() = TranscriptionSession::Running {

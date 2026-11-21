@@ -1,5 +1,5 @@
 use super::{
-    engine::Engine,
+    engine::{Engine, LoadedModel},
     overlap::{OVERLAP_MS, Reconciler},
 };
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -35,7 +35,14 @@ pub enum Event {
     Progress(f64),
     Final(Vec<Segment>),
     Provisional(String),
-    Meter { seconds: f64, level: f64 },
+    Meter {
+        seconds: f64,
+        level: f64,
+    },
+    /// Completes a file inside a batch. All preceding cues for that file use
+    /// file-local timestamps; the next file's events follow this boundary.
+    FileFinished(Result<Completion, String>),
+    /// Terminal result for a single-source job or the entire batch.
     Finished(Result<Completion, String>),
 }
 
@@ -54,6 +61,50 @@ impl Drop for Job {
 /// Start with owned settings and recognition-context snapshots. Context is
 /// explicit user input, never the previous pass's provisional hypothesis.
 pub fn start(source: Source, settings: Settings, offset_ms: u64, context: String) -> Job {
+    spawn(move |tx, cancel, stop| {
+        let stopped_before_capture =
+            || matches!(source, Source::Microphone) && stop.load(Ordering::Relaxed);
+        if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
+            return Ok(Completion::Complete);
+        }
+        announce_model_load(tx);
+        let engine = Engine::new(&settings, &context, cancel.clone());
+        if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
+            return Ok(Completion::Complete);
+        }
+        let mut engine = engine?;
+        match source {
+            Source::File(path) => file_windows(&path, offset_ms, tx, cancel, |samples, at| {
+                engine.transcribe(samples, at)
+            }),
+            Source::Microphone => microphone(&mut engine, &settings, offset_ms, tx, cancel, stop)
+                .map(|()| Completion::Complete),
+        }
+    })
+}
+
+/// Run ordered files in one job. File cues have local timestamps even when the
+/// caller is appending to an existing transcript; each FileFinished is a boundary.
+pub fn start_files(paths: Vec<PathBuf>, settings: Settings, context: String) -> Job {
+    spawn(move |tx, cancel, _| {
+        run_files(
+            &paths,
+            tx,
+            cancel,
+            || LoadedModel::load(&settings, &context),
+            |model| {
+                let mut engine = model.fresh_engine(cancel.clone())?;
+                Ok(move |samples: &[f32], at| engine.transcribe(samples, at))
+            },
+        )
+    })
+}
+
+fn spawn(
+    work: impl FnOnce(&SyncSender<Event>, &Arc<AtomicBool>, &Arc<AtomicBool>) -> Result<Completion>
+    + Send
+    + 'static,
+) -> Job {
     let (tx, events) = mpsc::sync_channel(128);
     let cancel = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
@@ -65,31 +116,7 @@ pub fn start(source: Source, settings: Settings, offset_ms: u64, context: String
     std::thread::spawn(move || {
         // A panic must still unlock the interface, not leave it in a busy state.
         let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Completion> {
-                let stopped_before_capture =
-                    || matches!(source, Source::Microphone) && stop.load(Ordering::Relaxed);
-                if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
-                    return Ok(Completion::Complete);
-                }
-                send(
-                    &tx,
-                    Event::Status(
-                        "Loading model… cancellation waits for model loading to finish".into(),
-                    ),
-                );
-                let engine = Engine::new(&settings, &context, cancel.clone());
-                if cancel.load(Ordering::Relaxed) || stopped_before_capture() {
-                    return Ok(Completion::Complete);
-                }
-                let mut engine = engine?;
-                match source {
-                    Source::File(path) => file(&mut engine, path, offset_ms, &tx, &cancel),
-                    Source::Microphone => {
-                        microphone(&mut engine, &settings, offset_ms, &tx, &cancel, &stop)
-                            .map(|()| Completion::Complete)
-                    }
-                }
-            }));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&tx, &cancel, &stop)));
         let result = match outcome {
             Ok(_) if cancel.load(Ordering::Relaxed) => Ok(Completion::Complete),
             Ok(result) => result.map_err(|e| format!("{e:#}")),
@@ -105,26 +132,58 @@ fn send(tx: &SyncSender<Event>, event: Event) {
     let _ = tx.send(event);
 }
 
-fn file(
-    engine: &mut Engine,
-    path: PathBuf,
-    offset: u64,
+fn announce_model_load(tx: &SyncSender<Event>) {
+    send(
+        tx,
+        Event::Status("Loading model… cancellation waits for model loading to finish".into()),
+    );
+}
+
+fn run_files<M, State>(
+    paths: &[PathBuf],
     tx: &SyncSender<Event>,
     cancel: &AtomicBool,
-) -> Result<Completion> {
-    file_windows(path, offset, tx, cancel, |samples, at| {
-        engine.transcribe(samples, at)
-    })
+    load_model: impl FnOnce() -> Result<M>,
+    mut fresh_state: impl FnMut(&M) -> Result<State>,
+) -> Result<Completion>
+where
+    State: FnMut(&[f32], u64) -> Result<Vec<Segment>>,
+{
+    if paths.is_empty() || cancel.load(Ordering::Relaxed) {
+        return Ok(Completion::Complete);
+    }
+    announce_model_load(tx);
+    let model = load_model()?;
+    for path in paths {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let state = fresh_state(&model)?;
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        // file_windows owns the state, so it drops it before the next file
+        // creates a new one. Per-file decoding/overlap state is also local.
+        let result = file_windows(path, 0, tx, cancel, state);
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        send(
+            tx,
+            Event::FileFinished(result.map_err(|error| format!("{error:#}"))),
+        );
+    }
+    Ok(Completion::Complete)
 }
 
 fn file_windows(
-    path: PathBuf,
+    path: &Path,
     offset: u64,
     tx: &SyncSender<Event>,
     cancel: &AtomicBool,
     mut transcribe: impl FnMut(&[f32], u64) -> Result<Vec<Segment>>,
 ) -> Result<Completion> {
-    let mut audio = AudioFile::open(&path)?;
+    let mut audio = AudioFile::open(path)?;
     let mut pending = Vec::new();
     let mut processed = 0_usize;
     let window = SAMPLE_RATE * 28;
@@ -316,7 +375,7 @@ fn microphone_capture(
 mod tests {
     use super::*;
     use crate::transcript::Transcript;
-    use std::io::Write;
+    use std::{cell::Cell, io::Write};
 
     fn hypothesis(samples: &[f32], at: u64) -> Vec<Segment> {
         let end = at + samples.len() as u64 * 1000 / SAMPLE_RATE as u64;
@@ -478,6 +537,134 @@ mod tests {
     }
 
     #[test]
+    fn batch_loads_once_and_drops_each_state_before_the_next_file() {
+        struct LiveState<'a>(&'a Cell<bool>);
+        impl Drop for LiveState<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+
+        let first = silence(500);
+        let broken = tempfile::NamedTempFile::new().unwrap();
+        let last = silence(2000);
+        last.as_file()
+            .set_len(44 + (SAMPLE_RATE * 2) as u64)
+            .unwrap();
+        let paths = [
+            first.path().into(),
+            broken.path().into(),
+            last.path().into(),
+        ];
+        let (tx, rx) = mpsc::sync_channel(128);
+        let loads = Cell::new(0);
+        let states = Cell::new(0);
+        let live = Cell::new(false);
+        let result = run_files(
+            &paths,
+            &tx,
+            &AtomicBool::new(false),
+            || {
+                loads.set(loads.get() + 1);
+                Ok(())
+            },
+            |_| {
+                assert!(!live.replace(true), "previous file state still alive");
+                let guard = LiveState(&live);
+                let index = states.get();
+                states.set(index + 1);
+                Ok(move |samples: &[f32], at| {
+                    let _keep_alive = &guard;
+                    assert_eq!(at, 0, "timestamps must be file-relative");
+                    Ok(vec![Segment {
+                        start_ms: at,
+                        end_ms: samples.len() as u64 * 1000 / SAMPLE_RATE as u64,
+                        text: format!("file {index}"),
+                    }])
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(result, Completion::Complete);
+        assert_eq!(loads.get(), 1);
+        assert_eq!(states.get(), 3);
+        assert!(!live.get());
+        let mut outcomes = Vec::new();
+        let mut text = Vec::new();
+        for event in rx.try_iter() {
+            match event {
+                Event::FileFinished(result) => outcomes.push(result),
+                Event::Final(segments) => text.extend(segments.into_iter().map(|cue| cue.text)),
+                _ => {}
+            }
+        }
+        assert_eq!(outcomes.len(), 3);
+        assert_eq!(outcomes[0], Ok(Completion::Complete));
+        assert!(outcomes[1].is_err());
+        assert_eq!(outcomes[2], Ok(Completion::IncompleteFile));
+        assert_eq!(text, ["file 0", "file 2"]);
+    }
+
+    #[test]
+    fn model_setup_failure_has_one_terminal_result_and_no_file_results() {
+        let job = start_files(
+            vec!["first.wav".into(), "second.wav".into()],
+            Settings::default(),
+            String::new(),
+        );
+        let mut loads = 0;
+        loop {
+            match job.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Status(status) if status.starts_with("Loading model") => loads += 1,
+                Event::FileFinished(_) => panic!("a setup failure is not a file error"),
+                Event::Finished(result) => {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .contains("Select or download a Whisper model first")
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(loads, 1);
+        assert!(matches!(
+            job.events.recv_timeout(Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn cancelling_batch_does_not_create_state_for_later_files() {
+        let first = silence(500);
+        let paths = [first.path().into(), "second.wav".into()];
+        let (tx, rx) = mpsc::sync_channel(128);
+        let cancel = &AtomicBool::new(false);
+        let states = Cell::new(0);
+        let result = run_files(
+            &paths,
+            &tx,
+            cancel,
+            || Ok(()),
+            |_| {
+                states.set(states.get() + 1);
+                Ok(move |_: &[f32], _| {
+                    cancel.store(true, Ordering::Relaxed);
+                    Ok(Vec::new())
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(result, Completion::Complete);
+        assert_eq!(states.get(), 1);
+        assert!(
+            !rx.try_iter()
+                .any(|event| matches!(event, Event::Final(_) | Event::FileFinished(_)))
+        );
+    }
+
+    #[test]
     fn truncated_file_finalizes_readable_audio_without_reporting_full_progress() {
         let audio = silence(2_000);
         audio
@@ -486,7 +673,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = mpsc::sync_channel(128);
         let result = file_windows(
-            audio.path().into(),
+            audio.path(),
             0,
             &tx,
             &AtomicBool::new(false),
@@ -520,7 +707,7 @@ mod tests {
             let (tx, rx) = mpsc::sync_channel(128);
             let mut calls = Vec::new();
             let result = file_windows(
-                audio.path().into(),
+                audio.path(),
                 offset,
                 &tx,
                 &AtomicBool::new(false),

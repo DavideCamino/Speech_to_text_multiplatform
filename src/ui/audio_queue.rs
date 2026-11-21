@@ -10,6 +10,7 @@ pub(super) struct AudioFile {
 
 pub(super) struct Batch {
     pub index: usize,
+    pub offset_ms: u64,
     started: Instant,
     completed_fractions: Vec<f64>,
     pub fraction: f64,
@@ -90,9 +91,10 @@ impl AudioQueue {
         true
     }
 
-    pub fn begin(&mut self) {
+    pub fn begin(&mut self, offset_ms: u64) {
         self.batch = Some(Batch {
             index: 0,
+            offset_ms,
             started: Instant::now(),
             completed_fractions: vec![],
             fraction: 0.0,
@@ -101,9 +103,14 @@ impl AudioQueue {
         });
     }
 
-    pub fn advance(&mut self, result: &Result<Completion, String>) -> Option<PathBuf> {
-        let batch = self.batch.as_mut()?;
-        let file = self.files.get(batch.index)?;
+    /// Record the current file and return whether another file follows.
+    pub fn advance(&mut self, result: &Result<Completion, String>, next_offset_ms: u64) -> bool {
+        let Some(batch) = self.batch.as_mut() else {
+            return false;
+        };
+        let Some(file) = self.files.get(batch.index) else {
+            return false;
+        };
         match result {
             Ok(Completion::Complete) => batch.fraction = 1.0,
             Ok(Completion::IncompleteFile) => batch.incomplete.push(file.path.clone()),
@@ -113,8 +120,9 @@ impl AudioQueue {
         }
         batch.completed_fractions.push(batch.fraction);
         batch.index += 1;
+        batch.offset_ms = next_offset_ms;
         batch.fraction = 0.0;
-        self.files.get(batch.index).map(|file| file.path.clone())
+        batch.index < self.files.len()
     }
 
     pub fn remaining_seconds(&self) -> Option<f64> {
@@ -265,8 +273,10 @@ impl super::app::App {
 
     pub(super) fn refresh_file_progress(&self) {
         use adw::prelude::*;
+        let cancelling = self.session.borrow().cancelling();
         let queue = self.audio_queue.borrow();
-        if let Some(batch) = &queue.batch
+        if !cancelling
+            && let Some(batch) = &queue.batch
             && batch.index < queue.files.len()
         {
             let remaining = queue
@@ -338,7 +348,7 @@ mod tests {
         assert!(!q.move_file(1, 1));
         assert!(q.remove(1));
         assert_eq!(q.files.len(), 2);
-        q.begin();
+        q.begin(0);
         assert!(!q.move_file(0, 1));
         assert!(!q.remove(0));
         q.clear();
@@ -379,7 +389,7 @@ mod tests {
     #[test]
     fn remaining_time_includes_current_and_all_pending_files() {
         let mut q = queue();
-        q.begin();
+        q.begin(0);
         let b = q.batch.as_mut().unwrap();
         b.started = Instant::now() - Duration::from_secs(10);
         b.fraction = 0.5; // 30 audio seconds processed in 10 wall seconds
@@ -396,13 +406,10 @@ mod tests {
     fn unknown_duration_waits_and_late_metadata_counts_completed_work() {
         let mut q = queue();
         q.files[0].duration = None;
-        q.begin();
+        q.begin(0);
         q.batch.as_mut().unwrap().fraction = 1.0;
         assert!(q.remaining_seconds().is_none());
-        assert_eq!(
-            q.advance(&Ok(Completion::Complete)),
-            Some(PathBuf::from("b.wav"))
-        );
+        assert!(q.advance(&Ok(Completion::Complete), 0));
         q.files[0].duration = Some(60.0);
         q.batch.as_mut().unwrap().started = Instant::now() - Duration::from_secs(10);
         assert!((q.remaining_seconds().unwrap() - 50.0).abs() < 0.1);
@@ -416,24 +423,22 @@ mod tests {
     #[test]
     fn failures_advance_once_and_preserve_completed_fraction() {
         let mut q = queue();
-        q.begin();
+        q.begin(1000);
         q.batch.as_mut().unwrap().fraction = 0.5;
-        assert_eq!(
-            q.advance(&Err("decode failed".into())),
-            Some("b.wav".into())
-        );
+        assert!(q.advance(&Err("decode failed".into()), 1500));
         let b = q.batch.as_ref().unwrap();
         assert_eq!(b.index, 1);
+        assert_eq!(b.offset_ms, 1500);
         assert_eq!(b.completed_fractions, [0.5]);
         assert_eq!(b.fraction, 0.0);
         assert!(b.failures[0].contains("a.wav: decode failed"));
-        q.advance(&Ok(Completion::IncompleteFile));
+        assert!(q.advance(&Ok(Completion::IncompleteFile), 2000));
         assert_eq!(
             q.batch.as_ref().unwrap().incomplete,
             [PathBuf::from("b.wav")]
         );
-        assert!(q.advance(&Ok(Completion::Complete)).is_none());
-        assert!(q.advance(&Ok(Completion::Complete)).is_none());
+        assert!(!q.advance(&Ok(Completion::Complete), 2500));
+        assert!(!q.advance(&Ok(Completion::Complete), 2500));
     }
 
     #[test]

@@ -31,7 +31,7 @@ Choose the spoken language, **Auto**, or **Custom…** for another supported Whi
 
 Choose **Open Audio…** to select one or more files without starting transcription. An expandable queue appears below the controls and **Record** changes to **Start**. Expand the queue to reorder files by dragging a row or using its up/down buttons, or remove individual files. Opening audio again replaces the pending queue. Queue editing is disabled while processing.
 
-Click **Start** when ready; if a transcript already exists, choose **Replace** or **Append** once for the entire batch. Files run sequentially in queue order, with a blank line between files that produce text. Subtitle timestamps continue along the original subtitle timeline.
+Click **Start** when ready; if a transcript already exists, choose **Replace** or **Append** once for the entire batch. Whisper loads the model once per batch. Files run sequentially in queue order with a fresh recognition state per file and a blank line between files that produce text. Subtitle timestamps continue along the original subtitle timeline.
 
 The progress bar shows the current file's progress. Beside it, **File 2 of 5 · 12 min remaining** shows the current position and time remaining for the current file plus all pending files. Time remaining also appears for a single file. It is calculated from audio durations and observed processing speed; **Calculating time remaining…** appears until enough information is available, or when a pending file's duration cannot be determined.
 

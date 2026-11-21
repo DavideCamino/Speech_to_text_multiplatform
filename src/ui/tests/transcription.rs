@@ -98,7 +98,7 @@ pub(super) fn queued_audio_controls() {
     assert_eq!(app.audio_queue.borrow().selected(), Some(&path));
     app.main.cancel.emit_clicked();
     assert!(app.session.borrow().cancelling());
-    assert!(app.audio_queue.borrow().selected().is_none());
+    assert!(!app.main.selected_audio.is_visible());
     assert_eq!(app.main.record.label().as_deref(), Some("Record"));
     // Drop the real worker (no model was configured) and test its completion UI
     // deterministically through the normal typed worker channel instead.
@@ -122,6 +122,7 @@ pub(super) fn queued_audio_controls() {
     tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
     app.poll_transcription();
     assert!(!app.session.borrow().is_running());
+    assert!(app.audio_queue.borrow().selected().is_none());
     assert_eq!(buffer_text(&app.main.transcript), "Finalized words");
     assert!(path.exists());
 

@@ -11,10 +11,16 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
+pub(super) struct LoadedModel {
+    context: WhisperContext,
+    language: Option<String>,
+    prompt_tokens: Arc<[whisper_rs::WhisperTokenId]>,
+}
+
 pub struct Engine {
     state: WhisperState,
     language: Option<String>,
-    prompt_tokens: Vec<whisper_rs::WhisperTokenId>,
+    prompt_tokens: Arc<[whisper_rs::WhisperTokenId]>,
     // Outlives state/backend teardown, including any retained native callback.
     cancel: Arc<AtomicBool>,
 }
@@ -38,12 +44,8 @@ fn context_prompt(context: &str) -> Result<&str> {
     Ok(prompt)
 }
 
-impl Engine {
-    pub fn new(
-        settings: &Settings,
-        recognition_context: &str,
-        cancel: Arc<AtomicBool>,
-    ) -> Result<Self> {
+impl LoadedModel {
+    pub(super) fn load(settings: &Settings, recognition_context: &str) -> Result<Self> {
         let prompt = context_prompt(recognition_context)?;
         // Native debug logs can include recognized words. Do not send private
         // transcript fragments to stderr (no logging backend is enabled).
@@ -76,11 +78,32 @@ impl Engine {
                 .context("Cannot tokenize recognition context")?
         };
         Ok(Self {
-            state: context.create_state()?,
+            context,
             language: settings.language.clone(),
-            prompt_tokens,
+            prompt_tokens: prompt_tokens.into(),
+        })
+    }
+
+    pub(super) fn fresh_engine(&self, cancel: Arc<AtomicBool>) -> Result<Engine> {
+        Ok(Engine {
+            state: self
+                .context
+                .create_state()
+                .context("Cannot initialize Whisper recognition state")?,
+            language: self.language.clone(),
+            prompt_tokens: self.prompt_tokens.clone(),
             cancel,
         })
+    }
+}
+
+impl Engine {
+    pub fn new(
+        settings: &Settings,
+        recognition_context: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        LoadedModel::load(settings, recognition_context)?.fresh_engine(cancel)
     }
 
     pub fn transcribe(&mut self, samples: &[f32], offset_ms: u64) -> Result<Vec<Segment>> {
