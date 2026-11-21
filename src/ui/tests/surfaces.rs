@@ -68,7 +68,12 @@ pub(super) fn settings_pages_and_menu_surfaces(parent: &adw::ApplicationWindow) 
     assert_eq!(preferences.llm_port.text(), "8080");
     assert!(!preferences.llm_https.is_active());
     assert!(preferences.llm_token.text().is_empty());
-    assert!(preferences.llm_test.is_sensitive());
+    assert_eq!(
+        preferences.llm_refresh.label().as_deref(),
+        Some("Refresh Models")
+    );
+    assert!(preferences.llm_refresh.is_sensitive());
+    assert_eq!(preferences.llm_model_selection.n_items(), 0);
     let rewrite = RewriteView::new(&Rc::new(text_zoom::ZoomGroup::default()));
     assert_eq!(rewrite.run.label().as_deref(), Some("Rewrite"));
     assert!(buffer_text(&rewrite.prompt).is_empty());

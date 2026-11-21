@@ -170,8 +170,9 @@ impl App {
     }
 
     fn connect_rewrite_actions(self: &Rc<Self>) {
-        on_click(&self.preferences.llm_test, self, |app| app.test_llm());
-        on_click(&self.preferences.llm_refresh, self, |app| app.test_llm());
+        on_click(&self.preferences.llm_refresh, self, |app| {
+            app.refresh_llm_models()
+        });
         on_click(&self.preferences.llm_apply, self, |app| app.apply_llm());
         for entry in [
             self.preferences.llm_host.upcast_ref::<gtk::Editable>(),
@@ -181,32 +182,33 @@ impl App {
             let weak = Rc::downgrade(self);
             entry.connect_changed(move |_| {
                 if let Some(app) = weak.upgrade() {
-                    app.llm_selection_changed();
+                    app.llm_connection_changed();
                 }
             });
         }
         let weak = Rc::downgrade(self);
         self.preferences.llm_https.connect_active_notify(move |_| {
             if let Some(app) = weak.upgrade() {
-                app.llm_selection_changed();
+                app.llm_connection_changed();
             }
         });
-        for (row, changes_load_target) in [
-            (&self.preferences.llm_model, true),
-            (&self.preferences.llm_reasoning, false),
-        ] {
-            let weak = Rc::downgrade(self);
-            row.connect_selected_notify(move |_| {
+        let weak = Rc::downgrade(self);
+        self.preferences
+            .llm_model_selection
+            .connect_selected_item_notify(move |_| {
                 if let Some(app) = weak.upgrade() {
-                    if changes_load_target {
-                        app.llm_selection_changed();
-                    }
-                    app.settings.borrow_mut().llm_options = app.llm_options();
-                    app.persist();
-                    app.refresh();
+                    app.llm_model_changed();
                 }
             });
-        }
+        let weak = Rc::downgrade(self);
+        self.preferences
+            .llm_reasoning
+            .connect_selected_notify(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.settings.borrow_mut().llm_options.reasoning = app.llm_options().reasoning;
+                    app.persist();
+                }
+            });
         on_click(&self.rewrite.stop, self, |app| app.request_rewrite_stop());
         on_click(&self.rewrite.back, self, |app| {
             app.stack.set_visible_child_name("main")

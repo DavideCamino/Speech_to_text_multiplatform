@@ -212,15 +212,84 @@ impl LanguageSelector {
     }
 }
 
+fn llm_model_picker(saved_model: Option<&str>) -> (adw::ActionRow, gtk::SingleSelection) {
+    let initial_models: Vec<_> = saved_model.into_iter().collect();
+    // ComboRow always selects an item on a nonempty list. Let this picker
+    // show the offered IDs without selecting one on the user's behalf.
+    let selection = gtk::SingleSelection::builder()
+        .autoselect(false)
+        .model(&gtk::StringList::new(&initial_models))
+        .build();
+    if saved_model.is_some() {
+        selection.set_selected(0);
+    }
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let label = gtk::Label::builder().xalign(0.0).selectable(false).build();
+        item.downcast_ref::<gtk::ListItem>()
+            .unwrap()
+            .set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        let label = item.child().and_downcast::<gtk::Label>().unwrap();
+        let id = item.item().and_downcast::<gtk::StringObject>().unwrap();
+        label.set_label(&id.string());
+    });
+    let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
+    list.set_single_click_activate(true);
+    let scroll = gtk::ScrolledWindow::builder()
+        .min_content_width(220)
+        .max_content_height(300)
+        .propagate_natural_height(true)
+        .child(&list)
+        .build();
+    let popover = gtk::Popover::builder().child(&scroll).build();
+    let button = gtk::MenuButton::builder()
+        .valign(Align::Center)
+        .popover(&popover)
+        .always_show_arrow(true)
+        .tooltip_text("Choose an LLM model")
+        .label(saved_model.unwrap_or("Choose a model"))
+        .build();
+    let weak_button = button.downgrade();
+    selection.connect_selected_item_notify(move |selection| {
+        if let Some(button) = weak_button.upgrade() {
+            let id = selection
+                .selected_item()
+                .and_downcast::<gtk::StringObject>();
+            button.set_label(&id.map_or_else(|| "Choose a model".into(), |id| id.string()));
+        }
+    });
+    let weak_popover = popover.downgrade();
+    list.connect_activate(move |list, position| {
+        if let Some(selection) = list.model().and_downcast::<gtk::SingleSelection>() {
+            selection.set_selected(position);
+        }
+        if let Some(popover) = weak_popover.upgrade() {
+            popover.popdown();
+        }
+    });
+    let row = adw::ActionRow::builder()
+        .title("Model")
+        .subtitle("Refresh to list models. Apply closes Settings and loads your selection; wait for Model ready before rewriting.")
+        .sensitive(saved_model.is_some())
+        .use_markup(false)
+        .build();
+    row.add_suffix(&button);
+    row.set_activatable_widget(Some(&button));
+    (row, selection)
+}
+
 pub struct Preferences {
     pub window: adw::PreferencesWindow,
     pub llm_host: adw::EntryRow,
     pub llm_port: adw::EntryRow,
     pub llm_https: adw::SwitchRow,
     pub llm_token: adw::PasswordEntryRow,
-    pub llm_test: gtk::Button,
     pub llm_status: adw::ActionRow,
-    pub llm_model: adw::ComboRow,
+    pub llm_model: adw::ActionRow,
+    pub llm_model_selection: gtk::SingleSelection,
     pub llm_reasoning: adw::ComboRow,
     pub llm_refresh: gtk::Button,
     pub llm_apply: gtk::Button,
@@ -386,26 +455,16 @@ impl Preferences {
         let llm_token = adw::PasswordEntryRow::builder()
             .title("Auth token (optional, session only)")
             .build();
-        let llm_test = gtk::Button::with_label("Test Connection");
-        llm_test.set_valign(Align::Center);
-        let llm_status = adw::ActionRow::builder()
-            .title("Connection")
-            .subtitle("Not tested")
-            .use_markup(false)
-            .build();
-        llm_status.add_suffix(&llm_test);
         let llm_refresh = gtk::Button::with_label("Refresh Models");
         llm_refresh.set_valign(Align::Center);
-        let mut initial_models = vec!["Select a model…"];
-        initial_models.extend(settings.llm_options.model.as_deref());
-        let llm_model = adw::ComboRow::builder()
-            .title("Model")
-            .subtitle("Refresh to list models. Apply closes Settings and loads your selection; wait for Model ready before rewriting.")
-            .model(&gtk::StringList::new(&initial_models))
-            .selected(u32::from(settings.llm_options.model.is_some()))
+        let llm_status = adw::ActionRow::builder()
+            .title("Connection")
+            .subtitle("Click Refresh Models to check the server.")
             .use_markup(false)
             .build();
-        llm_model.add_suffix(&llm_refresh);
+        llm_status.add_suffix(&llm_refresh);
+        let (llm_model, llm_model_selection) =
+            llm_model_picker(settings.llm_options.model.as_deref());
         let llm_reasoning = adw::ComboRow::builder()
             .title("Reasoning level")
             .subtitle("Support depends on the model and server; default leaves it unchanged.")
@@ -431,6 +490,7 @@ impl Preferences {
         connection.add(&llm_model);
         connection.add(&llm_reasoning);
         let llm_apply = gtk::Button::with_label("Apply");
+        llm_apply.set_sensitive(settings.llm_options.model.is_some());
         llm_apply.add_css_class("suggested-action");
         llm_apply.set_halign(Align::End);
         llm_apply.set_valign(Align::End);
@@ -447,9 +507,9 @@ impl Preferences {
             llm_port,
             llm_https,
             llm_token,
-            llm_test,
             llm_status,
             llm_model,
+            llm_model_selection,
             llm_reasoning,
             llm_refresh,
             llm_apply,

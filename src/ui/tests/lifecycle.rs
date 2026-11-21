@@ -353,7 +353,7 @@ pub(super) fn lifecycle_job_ownership() {
     };
     let (_tx, events) = mpsc::sync_channel(1);
     let test_cancel = Arc::new(AtomicBool::new(false));
-    app.rewrite_state.borrow_mut().operation = RewriteOperation::TestingConnection(llm::Job {
+    app.refresh_llm_models_with(|_, _| llm::Job {
         events,
         cancel: test_cancel.clone(),
     });

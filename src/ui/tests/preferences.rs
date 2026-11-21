@@ -57,9 +57,9 @@ pub(super) fn recognition_apply_closes_and_saves() {
 
     let (_tx, events) = mpsc::sync_channel(1);
     app.preferences
-        .llm_model
-        .set_model(Some(&gtk::StringList::new(&["Select a model…", "chosen"])));
-    app.preferences.llm_model.set_selected(1);
+        .llm_model_selection
+        .set_model(Some(&gtk::StringList::new(&["chosen"])));
+    app.preferences.llm_model_selection.set_selected(0);
     app.preferences.window.set_visible(true);
     app.apply_llm_with(|_, _, _| crate::llm::Job {
         events,

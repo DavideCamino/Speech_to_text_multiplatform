@@ -9,6 +9,15 @@ use std::{
 
 const MODEL_LOADING: &str = "Loading selected model…";
 const SELECTION_CHANGED: &str = "LLM settings changed. Click Apply to load the selected model.";
+const REFRESH_REQUIRED: &str = "Connection settings changed. Click Refresh Models.";
+
+pub(super) struct ModelRefresh {
+    job: llm::Job,
+    connection: llm::Connection,
+    selection_revision: u64,
+    previous_model: Option<String>,
+    models: Option<Vec<llm::Model>>,
+}
 
 pub(super) struct LoadTarget {
     connection: llm::Connection,
@@ -26,7 +35,7 @@ impl LoadTarget {
 pub(super) enum RewriteOperation {
     #[default]
     Idle,
-    TestingConnection(llm::Job),
+    RefreshingModels(ModelRefresh),
     LoadingModel {
         job: llm::Job,
         target: LoadTarget,
@@ -37,7 +46,8 @@ pub(super) enum RewriteOperation {
 impl RewriteOperation {
     fn connection_job(&self) -> Option<&llm::Job> {
         match self {
-            Self::TestingConnection(job) | Self::LoadingModel { job, .. } => Some(job),
+            Self::RefreshingModels(refresh) => Some(&refresh.job),
+            Self::LoadingModel { job, .. } => Some(job),
             _ => None,
         }
     }
@@ -231,13 +241,12 @@ impl App {
         self.preferences
             .llm_token
             .set_sensitive(connection_editable);
-        self.preferences.llm_test.set_sensitive(connection_editable);
         self.preferences
             .llm_refresh
             .set_sensitive(connection_editable);
-        self.preferences
-            .llm_model
-            .set_sensitive(connection_editable);
+        self.preferences.llm_model.set_sensitive(
+            connection_editable && self.preferences.llm_model_selection.n_items() > 0,
+        );
         self.preferences
             .llm_reasoning
             .set_sensitive(connection_editable);
@@ -272,15 +281,17 @@ impl App {
         connection.base_url()?;
         Ok(connection)
     }
+    fn llm_selected_model(&self) -> Option<String> {
+        self.preferences
+            .llm_model_selection
+            .selected_item()
+            .and_downcast::<gtk::StringObject>()
+            .map(|item| item.string().to_string())
+    }
+
     pub(super) fn llm_options(&self) -> llm::Options {
         llm::Options {
-            model: self
-                .preferences
-                .llm_model
-                .selected_item()
-                .and_downcast::<gtk::StringObject>()
-                .filter(|_| self.preferences.llm_model.selected() != 0)
-                .map(|item| item.string().to_string()),
+            model: self.llm_selected_model(),
             reasoning: llm::Reasoning::ALL
                 .get(self.preferences.llm_reasoning.selected() as usize)
                 .copied()
@@ -288,15 +299,51 @@ impl App {
         }
     }
 
-    pub(super) fn llm_selection_changed(&self) {
+    pub(super) fn llm_connection_changed(&self) {
+        self.invalidate_llm_readiness(REFRESH_REQUIRED);
+        self.set_llm_models(&[], None);
+        self.preferences.llm_status.set_subtitle(REFRESH_REQUIRED);
+        self.refresh_rewrite_controls();
+    }
+
+    pub(super) fn llm_model_changed(&self) {
+        let model = self.llm_selected_model();
+        if self.settings.borrow().llm_options.model != model {
+            self.invalidate_llm_readiness(SELECTION_CHANGED);
+            self.settings.borrow_mut().llm_options.model = model;
+            self.persist();
+            self.refresh();
+        }
+    }
+
+    fn invalidate_llm_readiness(&self, message: &str) {
         let ready = {
             let mut state = self.rewrite_state.borrow_mut();
             state.selection_revision = state.selection_revision.wrapping_add(1);
             state.ready_model.take()
         };
         if let Some(ready) = ready {
-            self.replace_model_status(&ready.ready_message(), SELECTION_CHANGED);
+            self.replace_model_status(&ready.ready_message(), message);
         }
+    }
+
+    fn set_llm_models(&self, ids: &[&str], previous_model: Option<&str>) {
+        let selection = &self.preferences.llm_model_selection;
+        if ids.is_empty() && selection.n_items() == 0 {
+            return;
+        }
+        let selected = if ids.len() == 1 {
+            0
+        } else {
+            previous_model
+                .and_then(|previous| ids.iter().position(|&id| id == previous))
+                .map_or(gtk::INVALID_LIST_POSITION, |index| index as u32)
+        };
+        // Update the list and selection together so observers only see
+        // the final selected item, even if the index itself is unchanged.
+        let _freeze = selection.freeze_notify();
+        selection.set_model(Some(&gtk::StringList::new(ids)));
+        selection.set_selected(selected);
     }
 
     // Only replace labels that still show the model's previous status; other
@@ -359,26 +406,46 @@ impl App {
         self.refresh();
     }
 
-    pub(super) fn test_llm(&self) {
+    pub(super) fn refresh_llm_models(&self) {
+        self.refresh_llm_models_with(|connection, token| {
+            llm::start_configured(connection, token, None, llm::Options::default())
+        });
+    }
+
+    pub(super) fn refresh_llm_models_with(
+        &self,
+        start: impl FnOnce(llm::Connection, String) -> llm::Job,
+    ) {
         if !self.can_use_llm_settings() {
             return;
         }
-        match self.llm_connection() {
-            Ok(connection) => {
-                self.settings.borrow_mut().llm = connection.clone();
-                self.persist();
-                self.preferences.llm_status.set_subtitle("Connecting…");
-                self.rewrite_state.borrow_mut().operation =
-                    RewriteOperation::TestingConnection(llm::start_configured(
-                        connection,
-                        self.preferences.llm_token.text().to_string(),
-                        None,
-                        self.llm_options(),
-                    ));
-                self.refresh();
+        let connection = match self.llm_connection() {
+            Ok(connection) => connection,
+            Err(error) => {
+                self.invalidate_llm_readiness(REFRESH_REQUIRED);
+                self.set_llm_models(&[], None);
+                self.preferences.llm_status.set_subtitle(&error.to_string());
+                self.refresh_rewrite_controls();
+                return;
             }
-            Err(error) => self.preferences.llm_status.set_subtitle(&error.to_string()),
-        }
+        };
+        self.settings.borrow_mut().llm = connection.clone();
+        self.persist();
+        let refresh = ModelRefresh {
+            job: start(
+                connection.clone(),
+                self.preferences.llm_token.text().to_string(),
+            ),
+            connection,
+            selection_revision: self.rewrite_state.borrow().selection_revision,
+            previous_model: self.llm_selected_model(),
+            models: None,
+        };
+        self.rewrite_state.borrow_mut().operation = RewriteOperation::RefreshingModels(refresh);
+        self.preferences
+            .llm_status
+            .set_subtitle("Connecting and refreshing models…");
+        self.refresh();
     }
     pub(super) fn start_rewrite(&self) {
         if !self.can_start_llm_task() {
@@ -440,39 +507,38 @@ impl App {
     }
 
     pub(super) fn poll_rewrite(&self) {
-        let test_events = self
+        let connection_events = self
             .rewrite_state
             .borrow()
             .operation
             .connection_job()
             .map(drain)
             .unwrap_or_default();
-        let mut controls_changed = !test_events.is_empty();
-        for event in test_events {
-            if let llm::Event::Models(models) = &event {
-                let selected = self.llm_options().model;
-                let mut names = vec!["Select a model…"];
-                names.extend(models.iter().map(|m| m.id.as_str()));
-                self.preferences
-                    .llm_model
-                    .set_model(Some(&gtk::StringList::new(&names)));
-                self.preferences.llm_model.set_selected(
-                    selected
-                        .as_ref()
-                        .and_then(|id| models.iter().position(|m| &m.id == id))
-                        .map(|i| i as u32 + 1)
-                        .unwrap_or(0),
-                );
-            }
-            if let llm::Event::Finished(result) = event {
-                let operation = std::mem::take(&mut self.rewrite_state.borrow_mut().operation);
-                if let RewriteOperation::LoadingModel { target, .. } = operation {
-                    self.complete_model_load(target, result);
-                } else {
-                    self.preferences.llm_status.set_subtitle(
-                        &result.unwrap_or_else(|error| format!("Connection failed: {error}")),
-                    );
+        let mut controls_changed = !connection_events.is_empty();
+        for event in connection_events {
+            match event {
+                llm::Event::Models(models) => {
+                    if let RewriteOperation::RefreshingModels(refresh) =
+                        &mut self.rewrite_state.borrow_mut().operation
+                    {
+                        // Only replace the dropdown after a successful terminal
+                        // event, so invalid or disconnected requests cannot populate it.
+                        refresh.models = Some(models);
+                    }
                 }
+                llm::Event::Finished(result) => {
+                    let operation = std::mem::take(&mut self.rewrite_state.borrow_mut().operation);
+                    match operation {
+                        RewriteOperation::LoadingModel { target, .. } => {
+                            self.complete_model_load(target, result)
+                        }
+                        RewriteOperation::RefreshingModels(refresh) => {
+                            self.complete_model_refresh(refresh, result)
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         }
         let events = self
@@ -520,6 +586,43 @@ impl App {
             self.refresh();
         }
     }
+    fn complete_model_refresh(&self, refresh: ModelRefresh, result: Result<String, String>) {
+        let current = refresh.selection_revision == self.rewrite_state.borrow().selection_revision
+            && self
+                .llm_connection()
+                .is_ok_and(|connection| connection == refresh.connection);
+        let (ids, status) = if !current {
+            (Vec::new(), REFRESH_REQUIRED.to_owned())
+        } else {
+            match (result, refresh.models.as_deref()) {
+                (Ok(_), Some([])) => (
+                    Vec::new(),
+                    "Connected, but the server offers no models.".into(),
+                ),
+                (Ok(_), Some(models)) => (
+                    models.iter().map(|model| model.id.as_str()).collect(),
+                    if models.len() == 1 {
+                        "Connected. One model available.".into()
+                    } else {
+                        format!("Connected. {} models available.", models.len())
+                    },
+                ),
+                (Ok(_), None) => (
+                    Vec::new(),
+                    "Model refresh failed: no model list was returned.".into(),
+                ),
+                (Err(error), _) => (Vec::new(), format!("Model refresh failed: {error}")),
+            }
+        };
+        if ids.is_empty() {
+            self.invalidate_llm_readiness(
+                "No LLM model selected. Click Refresh Models in Settings.",
+            );
+        }
+        self.set_llm_models(&ids, refresh.previous_model.as_deref());
+        self.preferences.llm_status.set_subtitle(&status);
+    }
+
     fn complete_model_load(&self, target: LoadTarget, result: Result<String, String>) {
         let current = target.selection_revision == self.rewrite_state.borrow().selection_revision
             && self
@@ -527,7 +630,12 @@ impl App {
                 .is_ok_and(|connection| connection == target.connection)
             && self.llm_options().model.as_deref() == Some(target.model.as_str());
         let status = if !current {
-            SELECTION_CHANGED.to_owned()
+            if self.llm_selected_model().is_some() {
+                SELECTION_CHANGED
+            } else {
+                REFRESH_REQUIRED
+            }
+            .to_owned()
         } else if let Err(error) = result {
             format!("Model loading failed: {error}")
         } else {
@@ -545,7 +653,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{RewriteOperation, State};
+    use super::{ModelRefresh, RewriteOperation, State};
     use crate::llm;
     use std::sync::{
         Arc,
@@ -589,6 +697,16 @@ mod tests {
         assert!(cancel.load(Ordering::Relaxed));
     }
 
+    fn model_refresh(job: llm::Job) -> RewriteOperation {
+        RewriteOperation::RefreshingModels(ModelRefresh {
+            job,
+            connection: llm::Connection::default(),
+            selection_revision: 0,
+            previous_model: None,
+            models: None,
+        })
+    }
+
     #[test]
     fn rewrite_completion_and_drop_preserve_cancellation_contract() {
         for testing in [false, true] {
@@ -599,7 +717,7 @@ mod tests {
                 cancel: cancel.clone(),
             };
             let mut operation = if testing {
-                RewriteOperation::TestingConnection(job)
+                model_refresh(job)
             } else {
                 RewriteOperation::Generating(job)
             };
@@ -610,7 +728,7 @@ mod tests {
         }
         let (_, events) = mpsc::sync_channel(1);
         let cancel = Arc::new(AtomicBool::new(false));
-        drop(RewriteOperation::TestingConnection(llm::Job {
+        drop(model_refresh(llm::Job {
             events,
             cancel: cancel.clone(),
         }));
