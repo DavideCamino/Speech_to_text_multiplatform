@@ -12,7 +12,7 @@ pub(super) struct TranscriptBuffer {
     // emitted only when another finalized/provisional fragment follows it.
     trailing_whitespace: String,
     append_separator: bool,
-    file_separator: Option<String>,
+    file_separator: Option<&'static str>,
 }
 
 impl TranscriptBuffer {
@@ -52,12 +52,11 @@ impl TranscriptBuffer {
     /// Begin another audio job after idle edits. The left-gravity mark can
     /// remain before text typed at the old end, so explicitly move it past all
     /// edited text before a provisional suffix is inserted/replaced.
-    pub fn prepare_file_append(&mut self) {
+    pub fn prepare_file_append(&mut self, has_text: bool) {
         self.prepare_append();
-        let text = self
-            .buffer
-            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
-        self.file_separator = Some(crate::transcript::file_separator(&text).to_owned());
+        let mut end = self.buffer.end_iter();
+        let trailing = std::iter::from_fn(move || end.backward_char().then(|| end.char()));
+        self.file_separator = Some(crate::transcript::file_separator(has_text, trailing));
         self.append_separator = false;
         self.trailing_whitespace.clear();
     }
@@ -154,7 +153,7 @@ impl TranscriptBuffer {
         }
         if !provisional.is_empty() {
             let mut end = self.buffer.end_iter();
-            let text = if let Some(separator) = &self.file_separator {
+            let text = if let Some(separator) = self.file_separator {
                 format!("{separator}{}", provisional.trim_start())
             } else {
                 format!("{}{provisional}", self.trailing_whitespace)

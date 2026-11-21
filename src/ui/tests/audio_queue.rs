@@ -421,9 +421,39 @@ pub(super) fn single_file_time_remaining() {
     app.window.destroy();
 }
 
+pub(super) fn large_transcript_edit_and_file_boundary() {
+    let app = test_app();
+    app.connect();
+    let buffer = app.main.transcript.buffer();
+    let prefix = "長い transcript with Unicode.\n".repeat(16_384);
+    buffer.set_text(&prefix);
+    for _ in 0..32 {
+        buffer.insert(&mut buffer.end_iter(), "字");
+        let mut end = buffer.end_iter();
+        let mut start = end;
+        assert!(start.backward_char());
+        buffer.delete(&mut start, &mut end);
+        assert!(app.document.has_text());
+        assert!(app.main.txt.is_sensitive());
+    }
+    app.document.prepare_file_append();
+    app.document.accept_final(vec![Segment {
+        start_ms: 0,
+        end_ms: 1000,
+        text: " New file.".into(),
+    }]);
+    app.render_transcript();
+    assert_eq!(
+        buffer_text(&app.main.transcript),
+        format!("{prefix}\nNew file.")
+    );
+    app.window.destroy();
+}
+
 pub(super) fn file_boundary_rendering() {
     for (prefix, expected) in [
         ("", "Next."),
+        ("\u{2003}", "\u{2003}Next."),
         ("Edited.", "Edited.\n\nNext."),
         ("Edited.\n", "Edited.\n\nNext."),
         ("Edited.\n\n", "Edited.\n\nNext."),

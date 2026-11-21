@@ -40,16 +40,27 @@ impl Transcript {
     /// recovery schema. Prefix the first accepted cue's text with a file boundary.
     pub fn append_file(&mut self, segments: Vec<Segment>) {
         let previous = self.segments.len();
-        let existing = self
-            .segments
-            .iter()
-            .map(|segment| segment.text.as_str())
-            .collect::<String>();
         self.append(segments);
-        if !existing.trim().is_empty()
-            && let Some(first) = self.segments.get_mut(previous)
+        let (existing, added) = self.segments.split_at_mut(previous);
+        let Some(first) = added.first_mut() else {
+            return;
+        };
+        // Normally the final accepted cue already contains nonblank text. An
+        // imported snapshot may have blank cues, so fall back to earlier ones.
+        if existing
+            .iter()
+            .rev()
+            .any(|segment| segment.text.chars().any(|ch| !ch.is_whitespace()))
         {
-            first.text = format!("{}{}", file_separator(&existing), first.text.trim_start());
+            let trailing = existing
+                .iter()
+                .rev()
+                .flat_map(|segment| segment.text.chars().rev());
+            first.text = format!(
+                "{}{}",
+                file_separator(true, trailing),
+                first.text.trim_start()
+            );
         }
     }
 
@@ -71,13 +82,18 @@ impl Transcript {
 }
 
 /// Only add the missing newline(s); empty sources never create separators.
-pub(crate) fn file_separator(text: &str) -> &'static str {
-    if text.trim().is_empty() || text.ends_with("\n\n") {
+pub(crate) fn file_separator(
+    has_text: bool,
+    mut trailing: impl Iterator<Item = char>,
+) -> &'static str {
+    if !has_text {
         ""
-    } else if text.ends_with('\n') {
+    } else if trailing.next() != Some('\n') {
+        "\n\n"
+    } else if trailing.next() != Some('\n') {
         "\n"
     } else {
-        "\n\n"
+        ""
     }
 }
 
@@ -116,11 +132,35 @@ mod tests {
         let restored: Transcript =
             serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
         assert_eq!(restored.text(), transcript.text());
-        assert_eq!(file_separator(""), "");
-        assert_eq!(file_separator("   "), "");
-        assert_eq!(file_separator("First."), "\n\n");
-        assert_eq!(file_separator("First.\n"), "\n");
-        assert_eq!(file_separator("First.\n\n"), "");
+    }
+
+    #[test]
+    fn file_boundary_reads_newlines_across_segment_boundaries() {
+        for (prefix, expected) in [
+            (vec!["文", "字"], "文字\n\nNext."),
+            (vec!["文字", "\n"], "文字\n\nNext."),
+            (vec!["文字\n", "", "\n"], "文字\n\nNext."),
+            (vec!["　", "\n"], "Next."),
+        ] {
+            let mut transcript = Transcript {
+                segments: prefix
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, text)| Segment {
+                        start_ms: i as u64 * 100,
+                        end_ms: (i as u64 + 1) * 100,
+                        text: text.into(),
+                    })
+                    .collect(),
+            };
+            let start_ms = transcript.end_ms();
+            transcript.append_file(vec![Segment {
+                start_ms,
+                end_ms: start_ms + 100,
+                text: " Next.".into(),
+            }]);
+            assert_eq!(transcript.text(), expected);
+        }
     }
 
     #[test]

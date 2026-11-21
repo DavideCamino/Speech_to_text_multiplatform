@@ -31,9 +31,11 @@ fn settings_pages_and_menu_surfaces_build() {
     audio_queue::incomplete_batch_warns_only_after_final_file();
     audio_queue::batch_model_failure_ends_the_queue_once();
     audio_queue::file_boundary_rendering();
+    audio_queue::large_transcript_edit_and_file_boundary();
     audio_queue::single_file_time_remaining();
     lifecycle::closing_discards_entire_audio_batch();
     unsaved::header_unsaved_indicator();
+    unsaved::transcript_text_presence_tracks_unicode_and_undo();
     lifecycle::empty_edits_close_without_autosave();
     lifecycle::autosave_and_recovery();
     lifecycle::close_confirmation_offers_autosave_for_new_worker_output();

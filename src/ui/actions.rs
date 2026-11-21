@@ -30,7 +30,8 @@ impl App {
             if let Some(app) = weak.upgrade()
                 && app.document.record_user_edit()
             {
-                app.refresh();
+                app.refresh_unsaved_indicator();
+                app.refresh_transcript_text_actions();
             }
         });
     }

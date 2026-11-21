@@ -4,12 +4,45 @@
 //! after a user edit. The renderer preserves those edits when appending audio.
 use super::transcript_buffer::TranscriptBuffer;
 use crate::transcript::{Segment, Transcript};
-use std::cell::{Cell, RefCell};
+use gtk::prelude::*;
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
+
+fn count_nonblank(text: &str) -> usize {
+    text.chars().filter(|ch| !ch.is_whitespace()).count()
+}
+
+fn track_nonblank_chars(buffer: &gtk::TextBuffer) -> Rc<Cell<usize>> {
+    let count = Rc::new(Cell::new(count_nonblank(&buffer.text(
+        &buffer.start_iter(),
+        &buffer.end_iter(),
+        true,
+    ))));
+    // These handlers run before GTK changes the buffer and emits `changed`.
+    // Track both user edits and programmatic edits, regardless of dirty state.
+    let inserted = count.clone();
+    buffer.connect_insert_text(move |_, _, text| {
+        inserted.set(inserted.get() + count_nonblank(text));
+    });
+    let deleted = count.clone();
+    buffer.connect_delete_range(move |buffer, start, end| {
+        if start.is_start() && end.is_end() {
+            deleted.set(0);
+        } else if deleted.get() != 0 {
+            let removed = buffer.text(start, end, true);
+            deleted.set(deleted.get() - count_nonblank(&removed));
+        }
+    });
+    count
+}
 
 pub(super) struct TranscriptState {
     original: RefCell<Transcript>,
     provisional: RefCell<String>,
     renderer: RefCell<TranscriptBuffer>,
+    nonblank_chars: Rc<Cell<usize>>,
     unexported: Cell<bool>,
     text_edited: Cell<bool>,
     // Kept outside the renderer's RefCell: GTK emits changed synchronously while
@@ -23,6 +56,7 @@ impl TranscriptState {
         Self {
             original: RefCell::default(),
             provisional: RefCell::default(),
+            nonblank_chars: track_nonblank_chars(&buffer),
             renderer: RefCell::new(TranscriptBuffer::new(buffer)),
             unexported: Cell::new(false),
             text_edited: Cell::new(false),
@@ -75,7 +109,9 @@ impl TranscriptState {
 
     pub(super) fn prepare_file_append(&self) {
         self.file_boundary.set(true);
-        self.renderer.borrow_mut().prepare_file_append();
+        self.renderer
+            .borrow_mut()
+            .prepare_file_append(self.has_text());
     }
 
     pub(super) fn clear_provisional(&self) {
@@ -121,8 +157,12 @@ impl TranscriptState {
         self.unexported.get()
     }
 
-    pub(super) fn has_unsaved_text(&self, text: &str) -> bool {
-        !text.trim().is_empty() && (self.is_dirty() || !self.provisional.borrow().trim().is_empty())
+    pub(super) fn has_text(&self) -> bool {
+        self.nonblank_chars.get() != 0
+    }
+
+    pub(super) fn has_unsaved_text(&self) -> bool {
+        self.has_text() && (self.is_dirty() || !self.provisional.borrow().trim().is_empty())
     }
 
     pub(super) fn text_edited(&self) -> bool {

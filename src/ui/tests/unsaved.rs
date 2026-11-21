@@ -8,6 +8,59 @@ use crate::{
 use adw::prelude::*;
 use std::sync::{Arc, atomic::AtomicBool, mpsc};
 
+pub(super) fn transcript_text_presence_tracks_unicode_and_undo() {
+    let app = test_app();
+    app.connect();
+    app.refresh();
+    app.window.present();
+    let buffer = app.main.transcript.buffer();
+    buffer.set_enable_undo(true);
+    buffer.set_text("\u{2003}\u{00a0}\n");
+    let assert_text_presence = |present| {
+        assert_eq!(app.document.has_text(), present);
+        assert_eq!(app.unsaved_indicator.is_visible(), present);
+        for button in [&app.main.copy, &app.main.txt, &app.main.rewrite] {
+            assert_eq!(button.is_sensitive(), present);
+        }
+    };
+    assert!(app.has_transcript()); // A whitespace-only buffer is not literally empty.
+    assert_text_presence(false);
+    buffer.begin_user_action();
+    buffer.insert(&mut buffer.iter_at_offset(1), "界");
+    buffer.end_user_action();
+    assert_text_presence(true);
+    buffer.begin_user_action();
+    buffer.delete(&mut buffer.iter_at_offset(1), &mut buffer.iter_at_offset(2));
+    buffer.end_user_action();
+    assert_text_presence(false);
+    buffer.undo();
+    assert_text_presence(true);
+    buffer.redo();
+    assert_text_presence(false);
+
+    app.clear_transcript();
+    app.document.set_provisional("仮の結果".into());
+    app.render_transcript();
+    assert_text_presence(true);
+    assert!(!app.document.is_dirty());
+    app.document.set_provisional("\u{2003}".into());
+    app.render_transcript();
+    assert_text_presence(false);
+    assert!(!app.document.is_dirty());
+
+    app.document.restore(&crate::recovery::TranscriptSnapshot {
+        text: "Recovered text".into(),
+        ..Default::default()
+    });
+    app.refresh();
+    assert!(app.document.has_text() && app.main.txt.is_sensitive());
+    assert!(!app.unsaved_indicator.is_visible());
+    app.clear_transcript();
+    app.refresh();
+    assert_text_presence(false);
+    app.window.destroy();
+}
+
 pub(super) fn header_unsaved_indicator() {
     let app = test_app();
     app.connect();

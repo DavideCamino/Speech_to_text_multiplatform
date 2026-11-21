@@ -159,7 +159,7 @@ impl App {
     }
 
     pub(super) fn has_transcript(&self) -> bool {
-        self.document.has_segments() || !buffer_text(&self.main.transcript).is_empty()
+        self.document.has_segments() || self.main.transcript.buffer().char_count() != 0
     }
 
     pub(super) fn request_start(self: &Rc<Self>, source: Source) {
@@ -430,7 +430,6 @@ impl App {
     pub(super) fn refresh_transcription_controls(&self) {
         let busy = self.busy();
         let has_model = self.model_state.borrow().availability.is_available();
-        let has_text = !buffer_text(&self.main.transcript).trim().is_empty();
         let downloading = self.model_state.borrow().operation.is_running();
         // Release all state borrows before setting GTK properties, which can
         // synchronously emit notifications and invoke other UI callbacks.
@@ -487,10 +486,14 @@ impl App {
             .cancel
             .set_sensitive((transcribing || downloading || (has_audio && !busy)) && !cancelling);
         self.main.srt.set_sensitive(has_segments && !busy);
-        for button in [&self.main.copy, &self.main.txt] {
-            button.set_sensitive(has_text && !busy);
+        self.refresh_transcript_text_actions();
+    }
+
+    pub(super) fn refresh_transcript_text_actions(&self) {
+        let enabled = self.document.has_text() && !self.busy();
+        for button in [&self.main.copy, &self.main.txt, &self.main.rewrite] {
+            button.set_sensitive(enabled);
         }
-        self.main.rewrite.set_sensitive(has_text && !busy);
     }
 }
 
