@@ -101,14 +101,13 @@ fn worker_reports_model_errors_and_always_finishes() {
 
 #[test]
 fn worker_receives_owned_context_and_reports_invalid_input_without_panicking() {
-    let mut context = String::from("private context\0invalid");
+    let context = String::from("private context\0invalid");
     let job = transcription::start(
         Source::File("missing.wav".into()),
         Settings::default(),
         0,
-        context.clone(),
+        context,
     );
-    context.clear();
     loop {
         if let Event::Finished(result) = job.events.recv_timeout(Duration::from_secs(10)).unwrap() {
             let error = result.unwrap_err();
