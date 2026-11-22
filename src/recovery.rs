@@ -250,11 +250,24 @@ mod tests {
     fn invalid_files_and_failed_saves_preserve_existing_data() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join(FILE_NAME);
-        for bytes in [b"not json".as_slice(), b"{\"version\":999}".as_slice()] {
-            std::fs::write(&path, bytes).unwrap();
-            assert!(load(&path).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        }
+        let malformed = b"not json";
+        std::fs::write(&path, malformed).unwrap();
+        assert!(load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), malformed);
+
+        let future = Snapshot {
+            version: VERSION + 1,
+            ..Snapshot::default()
+        };
+        // Bypass save(), which rejects unsupported versions before writing.
+        let bytes = serde_json::to_vec(&future).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            load(&path).unwrap_err().to_string(),
+            "Unsupported recovery file version"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
         let snapshot = Snapshot::default();
         save(&path, &snapshot).unwrap();
         let before = std::fs::read(&path).unwrap();
