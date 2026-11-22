@@ -1,8 +1,9 @@
 //! Default preference/rewrite widgets, GPU controls, menus, and licensing.
 use crate::{
-    settings::Settings,
+    settings::{self, Settings},
     transcription,
     ui::{
+        app::App,
         dialogs, menu, preferences, text_zoom,
         views::{RewriteView, buffer_text},
     },
@@ -89,27 +90,105 @@ pub(super) fn settings_pages_and_menu_surfaces(parent: &adw::ApplicationWindow) 
         .update(&rewrite.result, "# Heading\n\n**Live** output");
     assert_eq!(buffer_text(&rewrite.result), "Heading\n\nLive output");
     assert!(!rewrite.result.is_editable());
-    let menu = menu::button();
-    assert_eq!(menu.menu_model().unwrap().n_items(), 3);
-    for (_, _, accelerator) in menu::SHORTCUTS {
-        assert!(gtk::accelerator_parse(*accelerator).is_some());
+    preferences.window.destroy();
+    menu_actions_and_license();
+}
+
+fn find_menu_button(widget: &gtk::Widget) -> Option<gtk::MenuButton> {
+    if let Some(button) = widget.downcast_ref::<gtk::MenuButton>()
+        && button.menu_model().is_some()
+    {
+        return Some(button.clone());
     }
-    menu::shortcuts(parent);
-    menu::about(parent);
-    let about = gtk::Window::list_toplevels()
-        .into_iter()
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(button) = find_menu_button(&widget) {
+            return Some(button);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn menu_actions_and_license() {
+    let application = adw::Application::builder()
+        .application_id("io.github.davidecamino.Speech2Text.MenuTests")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    application
+        .register(None::<&gtk::gio::Cancellable>)
+        .unwrap();
+    let app = App::new(
+        Some(&application),
+        Settings::default(),
+        settings::SaveWorker::with_save(|_| Ok(())),
+    );
+    app.connect();
+    app.window.present();
+
+    let button = find_menu_button(&app.window.content().unwrap()).expect("Main menu button");
+    let model = button.menu_model().unwrap();
+    let entries = [
+        ("Settings", "win.settings"),
+        ("Keyboard Shortcuts", "win.shortcuts"),
+        ("About Speech2Text", "win.about"),
+    ];
+    assert_eq!(model.n_items(), entries.len() as i32);
+    let activate_entry = |index: usize| {
+        let attribute = |key| {
+            model
+                .item_attribute_value(index as i32, key, Some(gtk::glib::VariantTy::STRING))
+                .and_then(|value| value.get::<String>())
+                .unwrap_or_else(|| panic!("Menu item {index} is missing {key}"))
+        };
+        let (label, expected_action) = entries[index];
+        assert_eq!(attribute("label"), label);
+        let action = attribute("action");
+        assert_eq!(action, expected_action, "wrong action for {label}");
+        gtk::prelude::WidgetExt::activate_action(&button, &action, None)
+            .unwrap_or_else(|error| panic!("Cannot activate {action}: {error}"));
+    };
+    for (action, _, accelerator) in menu::SHORTCUTS {
+        let expected = gtk::accelerator_parse(*accelerator).expect("Valid shortcut");
+        let registered = application.accels_for_action(action);
+        assert_eq!(registered.len(), 1, "accelerators for {action}");
+        assert_eq!(
+            gtk::accelerator_parse(&registered[0]),
+            Some(expected),
+            "accelerator for {action}"
+        );
+    }
+
+    assert!(!app.preferences.window.is_visible());
+    activate_entry(0);
+    assert!(app.preferences.window.is_visible());
+    app.preferences.window.set_visible(false);
+
+    let child_windows = || {
+        gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+            .filter(|window| {
+                window.is_visible()
+                    && window.transient_for().as_ref() == Some(app.window.upcast_ref())
+            })
+    };
+    activate_entry(1);
+    let shortcuts = child_windows()
+        .find_map(|window| window.downcast::<gtk::ShortcutsWindow>().ok())
+        .expect("Keyboard Shortcuts action should open its window");
+    shortcuts.destroy();
+
+    activate_entry(2);
+    let about = child_windows()
         .find_map(|window| window.downcast::<adw::AboutWindow>().ok())
-        .expect("About window");
+        .expect("About action should open its window");
     assert_eq!(about.license_type(), gtk::License::Custom);
     let license = about.license();
     assert!(license.contains("project license is MIT"));
     assert!(license.contains("MPL-2.0"));
     assert!(license.contains("LGPL"));
-    let shortcuts = gtk::Window::list_toplevels()
-        .into_iter()
-        .find_map(|window| window.downcast::<gtk::ShortcutsWindow>().ok())
-        .expect("Shortcuts window");
-    shortcuts.destroy();
     about.destroy();
-    preferences.window.destroy();
+    app.preferences.window.destroy();
+    app.window.destroy();
 }
