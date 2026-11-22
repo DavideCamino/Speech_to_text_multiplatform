@@ -76,7 +76,7 @@ jobs:
           # the patched dependency already committed under vendor/.
           cargo vendor --locked --versioned-dirs target/windows-vendor > target/windows-vendor-config.toml
           cargo build --release --locked --features vulkan --bin speech2text
-          cargo test --release --locked --features vulkan --lib --tests -- --skip ui::tests::settings_pages_and_menu_surfaces_build
+          cargo test --release --locked --features vulkan --lib --tests
       - name: Assemble portable runtime, sources and notices
         run: |
           python build-aux/windows/package.py --prefix "$(cygpath -m "$MINGW_PREFIX")" --binary "$CARGO_TARGET_DIR/release/speech2text.exe"

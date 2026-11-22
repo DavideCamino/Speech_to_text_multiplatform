@@ -53,14 +53,12 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --locked --all-targets --features "$CARGO_FEATURES" -- -D warnings
-      - name: Test with a virtual display and session bus
+      - name: Test without a display
+        run: cargo test --locked --all-targets --features "$CARGO_FEATURES"
+      - name: Test GTK with a virtual display and session bus
         run: |
-          xvfb-run -a dbus-run-session -- cargo test --locked --all-targets --features "$CARGO_FEATURES" -- --nocapture 2>&1 | tee test-output.log
-          # The GTK test otherwise treats display initialization failure as a
-          # successful skip. Do not allow that to hide regressions in CI.
-          if grep -Fq 'Skipping GTK surface test' test-output.log; then
-            echo 'GTK surface test was skipped despite the virtual display.' >&2
-            exit 1
-          fi
+          xvfb-run -a dbus-run-session -- \
+            cargo test --locked --lib --features "$CARGO_FEATURES" \
+            ui::tests::settings_pages_and_menu_surfaces_build -- --ignored --exact --nocapture
       - name: Build release
         run: cargo build --release --locked --features "$CARGO_FEATURES"

@@ -237,8 +237,7 @@ glslc --version >> target/windows-build-info.txt
 cargo vendor --locked --versioned-dirs target/windows-vendor \
   > target/windows-vendor-config.toml
 cargo build --release --locked --features vulkan --bin speech2text
-cargo test --release --locked --features vulkan --lib --tests -- \
-  --skip ui::tests::settings_pages_and_menu_surfaces_build
+cargo test --release --locked --features vulkan --lib --tests
 ```
 
 Choose another short writable `CARGO_TARGET_DIR` if necessary and use it consistently below. The executable is at `C:/s2t-target/release/speech2text.exe`; it is **not yet a portable app**. The vendored registry sources are for license collection. Do not install the generated vendor configuration over the project's configuration or replace the committed patched dependency.
@@ -307,20 +306,21 @@ python3 -m unittest discover -s build-aux/windows -p 'test_*.py' -v
 python3 -m unittest discover -s build-aux/flatpak -p 'test_*.py' -v
 ```
 
-The Vulkan checks require its native development tools. GTK checks use one test entry point, `ui::tests::settings_pages_and_menu_surfaces_build`; it skips if display initialization fails. To run it in a virtual X11 display/session bus, install `xvfb`, `xauth`, and `dbus-x11` on Ubuntu, then:
+The Vulkan checks require its native development tools. The GTK suite is ignored by default. Run it explicitly from a graphical desktop; it prints each scenario and fails if GTK cannot initialize:
 
 ```sh
-set -o pipefail
-GDK_BACKEND=x11 GTK_A11Y=none GSK_RENDERER=cairo \
-  xvfb-run -a dbus-run-session -- \
-  cargo test --locked --all-targets -- --nocapture 2>&1 | tee test-output.log
-if grep -Fq 'Skipping GTK surface test' test-output.log; then
-  echo 'GTK test did not run' >&2
-  exit 1
-fi
+cargo test --locked --lib ui::tests::settings_pages_and_menu_surfaces_build -- --ignored --exact --nocapture
 ```
 
-Repeat with `--features vulkan` before `-- --nocapture` for the Vulkan configuration. Most tests use fixtures and loopback mock servers, not real models or microphones. The ignored native-inference cancellation test requires `SPEECH2TEXT_TEST_MODEL` pointing to a local model and an explicit ignored-test run. Generated vendored bindings may emit warnings separately from first-party checks.
+On headless Ubuntu, install `xvfb`, `xauth`, and `dbus-x11`, then run it with a virtual X11 display and session bus:
+
+```sh
+GDK_BACKEND=x11 GTK_A11Y=none GSK_RENDERER=cairo \
+  xvfb-run -a dbus-run-session -- \
+  cargo test --locked --lib ui::tests::settings_pages_and_menu_surfaces_build -- --ignored --exact --nocapture
+```
+
+Add `--features vulkan` after `--lib` for the Vulkan configuration. Most tests use fixtures and loopback mock servers, not real models or microphones. The ignored native-inference cancellation test requires `SPEECH2TEXT_TEST_MODEL` pointing to a local model and an explicit ignored-test run. Generated vendored bindings may emit warnings separately from first-party checks.
 
 ### Input-method coverage and IBus
 

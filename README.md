@@ -98,6 +98,7 @@ The renderer supports headings, emphasis, lists, quotations, and code. Links are
 
 - **[Install Speech2Text](INSTALL.md):** Linux Flatpak and Windows installer instructions, updates, and saved-data locations.
 - **[Build from source](BUILD_FROM_SOURCE.md):** prerequisites, CPU/GPU builds, tests, and local Flatpak/Windows packaging.
+- **[Run the GTK tests](BUILD_FROM_SOURCE.md#5-validation-and-backend-tools):** opt in on a graphical desktop or use Xvfb on headless Linux. Plain `cargo test` reports the GTK suite as ignored.
 
 ## Missing features and current limitations
 
