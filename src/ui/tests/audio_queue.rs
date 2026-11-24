@@ -6,7 +6,9 @@ use crate::{
     ui::{
         app::App,
         model_controller::ModelAvailability,
-        transcription_controller::{SessionSource, TranscriptionSession},
+        transcription_controller::{
+            SessionSource, TRANSCRIPTION_EVENTS_PER_POLL, TranscriptionSession,
+        },
         views::buffer_text,
     },
 };
@@ -18,7 +20,7 @@ use std::{
 
 fn fake_job(app: &App) -> mpsc::SyncSender<Event> {
     app.session.borrow_mut().finish();
-    let (tx, events) = mpsc::sync_channel(16);
+    let (tx, events) = mpsc::sync_channel(TRANSCRIPTION_EVENTS_PER_POLL + 4);
     *app.session.borrow_mut() = TranscriptionSession::Running {
         source: SessionSource::File,
         job: Job {
@@ -150,9 +152,7 @@ pub(super) fn sequential_batch() {
         "empty.wav".into(),
         "three.wav".into(),
     ]);
-    for file in &mut app.audio_queue.borrow_mut().files {
-        file.duration = Some(60.0);
-    }
+    app.audio_queue.borrow_mut().set_test_durations(60.0);
     app.start_selected_source();
     let dialog = confirmation();
     dialog.response("append");
@@ -173,13 +173,13 @@ pub(super) fn sequential_batch() {
     }]))
     .unwrap();
     tx.send(Event::Progress(0.5)).unwrap();
-    app.poll_transcription();
+    app.poll();
     assert_eq!(app.main.progress.fraction(), 0.5);
     assert!(app.main.file_progress.text().contains("remaining"));
     assert!(!app.main.file_progress.text().contains("Calculating"));
     tx.send(Event::FileFinished(Ok(Completion::Complete)))
         .unwrap();
-    app.poll_transcription();
+    app.poll();
     assert!(app.session.borrow().is_running());
     assert_eq!(app.audio_queue.borrow().batch.as_ref().unwrap().index, 1);
     assert!(app.main.file_progress.text().starts_with("File 2 of 3"));
@@ -196,7 +196,7 @@ pub(super) fn sequential_batch() {
     // The same worker/channel completes the empty file and starts the next.
     tx.send(Event::FileFinished(Ok(Completion::Complete)))
         .unwrap();
-    app.poll_transcription();
+    app.poll();
     assert_eq!(buffer_text(&app.main.transcript), "Existing text. One.");
     assert!(app.main.file_progress.text().starts_with("File 3 of 3"));
     tx.send(Event::Provisional(" Three?".into())).unwrap();
@@ -252,10 +252,27 @@ pub(super) fn batch_failures_and_cancel() {
         text: "Kept.".into(),
     }]))
     .unwrap();
+    // Fill a tick across a failed file boundary, with another boundary already queued.
+    for _ in 0..TRANSCRIPTION_EVENTS_PER_POLL - 3 {
+        tx.send(Event::Progress(0.5)).unwrap();
+    }
     tx.send(Event::FileFinished(Err("decode failed".into())))
         .unwrap();
-    app.poll_transcription();
+    tx.send(Event::Progress(0.25)).unwrap();
+    tx.send(Event::FileFinished(Ok(Completion::Complete)))
+        .unwrap();
+    let calculations = app.audio_queue.borrow().eta_calculations.get();
+    app.poll();
+    assert_eq!(
+        app.audio_queue.borrow().eta_calculations.get(),
+        calculations + 1
+    );
     assert_eq!(app.audio_queue.borrow().batch.as_ref().unwrap().index, 1);
+    assert_eq!(
+        app.audio_queue.borrow().batch.as_ref().unwrap().fraction,
+        0.25
+    );
+    assert!(app.main.file_progress.text().starts_with("File 2 of 3"));
     assert_eq!(
         app.audio_queue
             .borrow()
@@ -266,8 +283,6 @@ pub(super) fn batch_failures_and_cancel() {
             .len(),
         1
     );
-    tx.send(Event::FileFinished(Ok(Completion::Complete)))
-        .unwrap();
     tx.send(Event::Final(vec![Segment {
         start_ms: 0,
         end_ms: 1000,
@@ -277,8 +292,10 @@ pub(super) fn batch_failures_and_cancel() {
     tx.send(Event::FileFinished(Ok(Completion::Complete)))
         .unwrap();
     tx.send(Event::Finished(Ok(Completion::Complete))).unwrap();
-    app.poll_transcription();
+    app.poll();
+    assert_eq!(app.document.end_ms(), 2000);
     assert_eq!(buffer_text(&app.main.transcript), "Kept.\n\nNext.");
+    assert!(app.main.file_progress.text().is_empty());
     assert!(app.main.status.text().contains("errors"));
     let error = gtk::Window::list_toplevels()
         .into_iter()
@@ -414,15 +431,17 @@ pub(super) fn single_file_time_remaining() {
     let app = ready();
     app.queue_audio("single.wav".into());
     app.start_selected_source();
-    app.audio_queue.borrow_mut().files[0].duration = Some(60.0);
+    app.audio_queue.borrow_mut().set_test_durations(60.0);
     let tx = fake_job(&app);
     tx.send(Event::Progress(0.5)).unwrap();
-    app.poll_transcription();
+    app.poll();
     assert!(app.main.file_progress.property::<bool>("visible"));
     assert!(app.main.file_progress.text().starts_with("File 1 of 1 · "));
     assert!(app.main.file_progress.text().contains("remaining"));
     assert!(!app.main.file_progress.text().contains("Calculating"));
     app.request_cancel();
+    assert!(!app.main.file_progress.property::<bool>("visible"));
+    assert!(app.main.file_progress.text().is_empty());
     tx.send(Event::Finished(Err("late cancellation error".into())))
         .unwrap();
     app.poll_transcription();

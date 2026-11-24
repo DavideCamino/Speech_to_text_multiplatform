@@ -157,6 +157,7 @@ impl App {
         self.poll_model_scan();
         self.audio_queue.borrow_mut().poll_metadata();
         self.poll_transcription();
+        // Render one ETA from the latest metadata and all file events processed this tick.
         self.refresh_file_progress();
         self.poll_model_download();
     }

@@ -4,6 +4,9 @@ use crate::transcription::{self, Completion, Event, Job, Source};
 use adw::prelude::*;
 use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};
 
+// Leave time for GTK input, metadata, and other workers even if the sender refills the channel.
+pub(super) const TRANSCRIPTION_EVENTS_PER_POLL: usize = 64;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SessionSource {
     File,
@@ -128,6 +131,8 @@ impl App {
         // cues already queued by the worker can still be applied correctly.
         if !transcribing || self.audio_queue.borrow().batch.is_none() {
             self.clear_audio_queue();
+        } else {
+            self.hide_file_progress();
         }
         let downloading = self.model_state.borrow().operation.request_cancel();
         if !transcribing && !downloading {
@@ -244,6 +249,9 @@ impl App {
         };
         self.main.progress.set_fraction(0.0);
         *self.session.borrow_mut() = TranscriptionSession::Running { source: kind, job };
+        if kind == SessionSource::File {
+            self.refresh_file_progress();
+        }
         self.refresh();
     }
 
@@ -252,7 +260,12 @@ impl App {
             .session
             .borrow()
             .job()
-            .map(|job| job.events.try_iter().collect())
+            .map(|job| {
+                job.events
+                    .try_iter()
+                    .take(TRANSCRIPTION_EVENTS_PER_POLL)
+                    .collect()
+            })
             .unwrap_or_default();
         let mut transcript_changed = false;
         for event in events {
@@ -272,7 +285,6 @@ impl App {
                     if let Some(batch) = &mut self.audio_queue.borrow_mut().batch {
                         batch.fraction = batch.fraction.max(fraction);
                     }
-                    self.refresh_file_progress();
                 }
                 Event::Final(mut segments) => {
                     if let Some(batch) = &self.audio_queue.borrow().batch {
@@ -457,7 +469,6 @@ impl App {
         self.main.selected_audio.set_visible(has_audio);
         self.main.audio_expander.set_visible(has_audio);
         self.main.audio_list.set_sensitive(!busy);
-        self.refresh_file_progress();
         if let Some(path) = selected_audio {
             let name = path
                 .file_name()

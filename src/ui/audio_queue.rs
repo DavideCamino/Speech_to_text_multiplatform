@@ -78,6 +78,8 @@ pub(super) struct AudioQueue {
     pub batch: Option<Batch>,
     rows: HashMap<FileId, usize>,
     metadata: Option<DurationProbe>,
+    #[cfg(test)]
+    pub(super) eta_calculations: std::cell::Cell<usize>,
 }
 
 impl AudioQueue {
@@ -200,7 +202,18 @@ impl AudioQueue {
         batch.index < self.files.len()
     }
 
+    #[cfg(test)]
+    pub(super) fn set_test_durations(&mut self, seconds: f64) {
+        // A pending metadata update must not overwrite the fixture when App::poll runs.
+        self.metadata = None;
+        for file in &mut self.files {
+            file.duration = Some(seconds);
+        }
+    }
+
     pub fn remaining_seconds(&self) -> Option<f64> {
+        #[cfg(test)]
+        self.eta_calculations.set(self.eta_calculations.get() + 1);
         let batch = self.batch.as_ref()?;
         let current = self.files.get(batch.index)?.duration?;
         let processed = self
@@ -248,6 +261,7 @@ impl super::app::App {
     pub(super) fn clear_audio_queue(&self) {
         self.audio_queue.borrow_mut().clear();
         self.main.audio_list.remove_all();
+        self.hide_file_progress();
     }
 
     pub(super) fn rebuild_audio_queue(self: &std::rc::Rc<Self>) {
@@ -375,9 +389,14 @@ impl super::app::App {
             ));
             self.main.file_progress.set_visible(true);
         } else {
-            self.main.file_progress.set_visible(false);
-            self.main.file_progress.set_text("");
+            self.hide_file_progress();
         }
+    }
+
+    pub(super) fn hide_file_progress(&self) {
+        use adw::prelude::*;
+        self.main.file_progress.set_visible(false);
+        self.main.file_progress.set_text("");
     }
 }
 
