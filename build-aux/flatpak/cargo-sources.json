@@ -786,20 +786,6 @@
   {
     "type": "archive",
     "archive-type": "tar-gzip",
-    "url": "https://static.crates.io/crates/futures-sink/futures-sink-0.3.34.crate",
-    "sha256": "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d",
-    "strip-components": 1,
-    "dest": "cargo/vendor/futures-sink-0.3.34"
-  },
-  {
-    "type": "inline",
-    "dest": "cargo/vendor/futures-sink-0.3.34",
-    "dest-filename": ".cargo-checksum.json",
-    "contents": "{\"files\": {}, \"package\": \"1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d\"}\n"
-  },
-  {
-    "type": "archive",
-    "archive-type": "tar-gzip",
     "url": "https://static.crates.io/crates/futures-task/futures-task-0.3.34.crate",
     "sha256": "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd",
     "strip-components": 1,
@@ -3054,20 +3040,6 @@
   {
     "type": "archive",
     "archive-type": "tar-gzip",
-    "url": "https://static.crates.io/crates/tokio-util/tokio-util-0.7.20.crate",
-    "sha256": "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b",
-    "strip-components": 1,
-    "dest": "cargo/vendor/tokio-util-0.7.20"
-  },
-  {
-    "type": "inline",
-    "dest": "cargo/vendor/tokio-util-0.7.20",
-    "dest-filename": ".cargo-checksum.json",
-    "contents": "{\"files\": {}, \"package\": \"e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b\"}\n"
-  },
-  {
-    "type": "archive",
-    "archive-type": "tar-gzip",
     "url": "https://static.crates.io/crates/toml/toml-1.1.8%2Bspec-1.1.0.crate",
     "sha256": "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d",
     "strip-components": 1,
@@ -3456,20 +3428,6 @@
     "dest": "cargo/vendor/wasm-bindgen-shared-0.2.129",
     "dest-filename": ".cargo-checksum.json",
     "contents": "{\"files\": {}, \"package\": \"23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6\"}\n"
-  },
-  {
-    "type": "archive",
-    "archive-type": "tar-gzip",
-    "url": "https://static.crates.io/crates/wasm-streams/wasm-streams-0.4.2.crate",
-    "sha256": "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65",
-    "strip-components": 1,
-    "dest": "cargo/vendor/wasm-streams-0.4.2"
-  },
-  {
-    "type": "inline",
-    "dest": "cargo/vendor/wasm-streams-0.4.2",
-    "dest-filename": ".cargo-checksum.json",
-    "contents": "{\"files\": {}, \"package\": \"15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65\"}\n"
   },
   {
     "type": "archive",
