@@ -79,6 +79,11 @@ fn read_settings(path: &Path) -> ReadSettings {
 }
 
 impl Settings {
+    /// Read the application's preferences, or return defaults if the file is missing.
+    /// This read does not establish whether a later write may replace the file.
+    #[deprecated(
+        note = "Legacy direct preferences read; use Settings as a data type with caller-managed persistence"
+    )]
     pub fn load() -> Result<Self> {
         match read_settings(&dirs()?.config_dir().join(FILE_NAME)) {
             ReadSettings::Loaded(settings) => Ok(settings),
@@ -88,12 +93,14 @@ impl Settings {
         }
     }
 
+    /// Write directly to the application's preferences path.
+    /// This can replace an existing preferences file without checking whether
+    /// it is readable, and does not preserve or quarantine unreadable files.
+    #[deprecated(
+        note = "Use caller-managed persistence; this method can overwrite unreadable preferences"
+    )]
     pub fn save(&self) -> Result<()> {
-        self.save_in(dirs()?.config_dir())
-    }
-
-    fn save_in(&self, directory: &Path) -> Result<()> {
-        self.write_in(directory, true)
+        self.write_in(dirs()?.config_dir(), true)
     }
 
     fn write_in(&self, directory: &Path, may_replace: bool) -> Result<()> {
@@ -330,7 +337,7 @@ mod tests {
             assert_ne!(std::thread::current().id(), ui_thread);
             entered.send(settings.language.clone()).unwrap();
             resume.recv_timeout(Duration::from_secs(5)).unwrap();
-            settings.save_in(&directory)
+            settings.write_in(&directory, true)
         });
         let snapshot = |language: &str| Settings {
             language: Some(language.into()),
@@ -509,7 +516,7 @@ mod tests {
             llm_system_prompt: "Preserve facts.\nDo not invent information.".into(),
             ..Settings::default()
         };
-        settings.save_in(root.path()).unwrap();
+        settings.write_in(root.path(), false).unwrap();
         let load = || -> Settings {
             serde_json::from_slice(&std::fs::read(root.path().join("settings.json")).unwrap())
                 .unwrap()
@@ -519,7 +526,7 @@ mod tests {
         assert_eq!(restored.llm_system_prompt, settings.llm_system_prompt);
         settings.whisper_context.clear();
         settings.llm_system_prompt.clear();
-        settings.save_in(root.path()).unwrap();
+        settings.write_in(root.path(), true).unwrap();
         let restored = load();
         assert!(restored.whisper_context.is_empty());
         assert!(restored.llm_system_prompt.is_empty());
@@ -533,7 +540,7 @@ mod tests {
             language: Some("it".into()),
             ..Settings::default()
         };
-        settings.save_in(&directory).unwrap();
+        settings.write_in(&directory, false).unwrap();
         let saved = std::fs::read(directory.join("settings.json")).unwrap();
         let restored: Settings = serde_json::from_slice(&saved).unwrap();
         assert_eq!(restored.language.as_deref(), Some("it"));
@@ -545,10 +552,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("settings.json");
         let mut settings = Settings::default();
-        settings.save_in(root.path()).unwrap();
+        settings.write_in(root.path(), false).unwrap();
         settings.language = Some("fr".into());
         settings.use_gpu = false;
-        settings.save_in(root.path()).unwrap();
+        settings.write_in(root.path(), true).unwrap();
         let restored: Settings = serde_json::from_slice(&std::fs::read(target).unwrap()).unwrap();
         assert_eq!(restored.language.as_deref(), Some("fr"));
         assert!(!restored.use_gpu);
@@ -563,7 +570,7 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         let existing = target.join("keep.json");
         std::fs::write(&existing, b"existing data").unwrap();
-        let error = Settings::default().save_in(root.path()).unwrap_err();
+        let error = Settings::default().write_in(root.path(), true).unwrap_err();
         assert!(error.to_string().contains("Cannot replace preferences"));
         assert_eq!(std::fs::read(existing).unwrap(), b"existing data");
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
