@@ -39,10 +39,12 @@ pub enum Event {
         seconds: f64,
         level: f64,
     },
-    /// Completes a file inside a batch. All preceding cues for that file use
-    /// file-local timestamps; the next file's events follow this boundary.
+    /// Reports a file's outcome inside a batch, including truncation or a file
+    /// error. Its cues use file-local timestamps and precede this boundary.
     FileFinished(Result<Completion, String>),
-    /// Terminal result for a single-source job or the entire batch.
+    /// Terminal result for a single-source job or the entire batch. A standalone
+    /// file can report `IncompleteFile` here. For a batch, `Complete` is a
+    /// job-level outcome, not a guarantee that every file succeeded.
     Finished(Result<Completion, String>),
 }
 
@@ -60,6 +62,7 @@ impl Drop for Job {
 
 /// Start with owned settings and recognition-context snapshots. Context is
 /// explicit user input, never the previous pass's provisional hypothesis.
+/// For a standalone file, truncation is reported as `IncompleteFile` in `Finished`.
 pub fn start(source: Source, settings: Settings, offset_ms: u64, context: String) -> Job {
     spawn(move |tx, cancel, stop| {
         let stopped_before_capture =
@@ -84,7 +87,9 @@ pub fn start(source: Source, settings: Settings, offset_ms: u64, context: String
 }
 
 /// Run ordered files in one job. File cues have local timestamps even when the
-/// caller is appending to an existing transcript; each FileFinished is a boundary.
+/// caller is appending to an existing transcript. Each `FileFinished` reports one
+/// file's outcome; terminal `Finished` reports the job outcome. A setup error can
+/// end the job before any file boundary. Cancellation is tracked via the job flag.
 pub fn start_files(paths: Vec<PathBuf>, settings: Settings, context: String) -> Job {
     spawn(move |tx, cancel, _| {
         run_files(

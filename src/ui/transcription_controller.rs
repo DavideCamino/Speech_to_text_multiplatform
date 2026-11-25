@@ -1,5 +1,7 @@
 //! Transcription controls, session lifecycle, and batched transcript updates.
-use super::{app::App, dialogs, lifecycle::WindowLifecycle, views::buffer_text};
+use super::{
+    app::App, audio_queue::Batch, dialogs, lifecycle::WindowLifecycle, views::buffer_text,
+};
 use crate::transcription::{self, Completion, Event, Job, Source};
 use adw::prelude::*;
 use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};
@@ -327,86 +329,8 @@ impl App {
                     self.refresh();
                 }
                 Event::Finished(result) => {
-                    let file = matches!(
-                        *self.session.borrow(),
-                        TranscriptionSession::Running {
-                            source: SessionSource::File,
-                            ..
-                        }
-                    );
-                    let cancelled = self.session.borrow_mut().finish();
-                    self.document.clear_provisional();
-                    self.document.render();
+                    self.finish_transcription(result);
                     transcript_changed = false;
-                    let batch = if file {
-                        let batch = self.audio_queue.borrow_mut().batch.take();
-                        self.clear_audio_queue();
-                        batch
-                    } else {
-                        None
-                    };
-                    self.check_model();
-                    self.main.meter.set_value(0.0);
-                    if cancelled {
-                        self.main
-                            .status
-                            .set_text("Cancelled. Completed text has been kept.");
-                    } else if let Some(batch) = batch
-                        .filter(|batch| !batch.incomplete.is_empty() || !batch.failures.is_empty())
-                    {
-                        let (heading, status, mut body) = if batch.incomplete.is_empty() {
-                            (
-                                "Some audio files failed",
-                                "Batch finished with errors. Completed text has been kept.",
-                                batch.failures.join("\n\n"),
-                            )
-                        } else {
-                            let paths = batch
-                                .incomplete
-                                .iter()
-                                .map(|path| format!("• {}", path.display()))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            let mut body = format!(
-                                "These audio files ended before their declared length. Text from the readable portions was kept.\n\n{paths}"
-                            );
-                            if !batch.failures.is_empty() {
-                                body.push_str("\n\nOther files failed:\n");
-                                body.push_str(&batch.failures.join("\n\n"));
-                            }
-                            (
-                                "Incomplete audio files",
-                                "Batch finished with incomplete audio. Recognized text has been kept.",
-                                body,
-                            )
-                        };
-                        if let Err(error) = &result {
-                            self.main.status.set_text(
-                                "Batch stopped before completion. Recognized text has been kept.",
-                            );
-                            body.push_str(&format!("\n\nBatch stopped: {error}"));
-                        } else {
-                            self.main.status.set_text(status);
-                        }
-                        dialogs::message(&self.window, heading, &body);
-                    } else {
-                        match result {
-                            Ok(Completion::Complete) => {
-                                self.main.status.set_text("Transcription complete.")
-                            }
-                            Ok(Completion::IncompleteFile) => self
-                                .main
-                                .status
-                                .set_text("Audio ended early. Recognized text has been kept."),
-                            Err(error) => {
-                                self.main.status.set_text(
-                                    "Transcription failed. Completed text has been kept.",
-                                );
-                                dialogs::message(&self.window, "Transcription failed", &error);
-                            }
-                        }
-                    }
-                    self.refresh();
                 }
             }
         }
@@ -415,6 +339,92 @@ impl App {
         if transcript_changed {
             self.render_transcript();
         }
+    }
+
+    fn finish_transcription(&self, result: Result<Completion, String>) {
+        let file = matches!(
+            *self.session.borrow(),
+            TranscriptionSession::Running {
+                source: SessionSource::File,
+                ..
+            }
+        );
+        let cancelled = self.session.borrow_mut().finish();
+        self.document.clear_provisional();
+        self.document.render();
+        let batch = if file {
+            let batch = self.audio_queue.borrow_mut().batch.take();
+            self.clear_audio_queue();
+            batch
+        } else {
+            None
+        };
+        self.check_model();
+        self.main.meter.set_value(0.0);
+        if cancelled {
+            self.main
+                .status
+                .set_text("Cancelled. Completed text has been kept.");
+        } else if let Some(batch) =
+            batch.filter(|batch| !batch.incomplete.is_empty() || !batch.failures.is_empty())
+        {
+            self.show_batch_issues(&batch, result.as_ref().err().map(String::as_str));
+        } else {
+            match result {
+                Ok(Completion::Complete) => self.main.status.set_text("Transcription complete."),
+                // Defensive fallback: the GUI uses start_files even for one file,
+                // so truncation normally arrives in FileFinished, not Finished.
+                Ok(Completion::IncompleteFile) => self
+                    .main
+                    .status
+                    .set_text("Audio ended early. Recognized text has been kept."),
+                Err(error) => {
+                    self.main
+                        .status
+                        .set_text("Transcription failed. Completed text has been kept.");
+                    dialogs::message(&self.window, "Transcription failed", &error);
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    fn show_batch_issues(&self, batch: &Batch, terminal_error: Option<&str>) {
+        let (heading, status, mut body) = if batch.incomplete.is_empty() {
+            (
+                "Some audio files failed",
+                "Batch finished with errors. Completed text has been kept.",
+                batch.failures.join("\n\n"),
+            )
+        } else {
+            let paths = batch
+                .incomplete
+                .iter()
+                .map(|path| format!("• {}", path.display()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut body = format!(
+                "These audio files ended before their declared length. Text from the readable portions was kept.\n\n{paths}"
+            );
+            if !batch.failures.is_empty() {
+                body.push_str("\n\nOther files failed:\n");
+                body.push_str(&batch.failures.join("\n\n"));
+            }
+            (
+                "Incomplete audio files",
+                "Batch finished with incomplete audio. Recognized text has been kept.",
+                body,
+            )
+        };
+        if let Some(error) = terminal_error {
+            self.main
+                .status
+                .set_text("Batch stopped before completion. Recognized text has been kept.");
+            body.push_str(&format!("\n\nBatch stopped: {error}"));
+        } else {
+            self.main.status.set_text(status);
+        }
+        dialogs::message(&self.window, heading, &body);
     }
 
     pub(super) fn refresh_transcript_editability(&self) {
