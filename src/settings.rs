@@ -1,8 +1,9 @@
+use crate::storage::{PublishError, PublishMode, publish_bytes};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{self, ErrorKind, Write},
+    io::{self, ErrorKind},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
 };
@@ -100,41 +101,40 @@ impl Settings {
         // plain text; transcripts/results, audio, and auth tokens are not saved
         // in preferences. Explicit session recovery uses a separate file.
         let contents = serde_json::to_vec_pretty(self)?;
-        std::fs::create_dir_all(directory).context("Cannot create preferences directory")?;
-        // Stage on the same filesystem so persist can atomically replace the
-        // old configuration without a delete-then-rename gap. On errors, Drop
-        // cleans up only this operation's temporary file.
-        let mut temporary = tempfile::Builder::new()
-            .prefix(".settings-")
-            .suffix(".tmp")
-            .tempfile_in(directory)
-            .context("Cannot create temporary preferences file")?;
-        temporary
-            .write_all(&contents)
-            .context("Cannot write preferences")?;
-        temporary
-            .as_file()
-            .sync_all()
-            .context("Cannot flush preferences")?;
         let path = directory.join(FILE_NAME);
-        if may_replace {
-            temporary
-                .persist(&path)
-                .map_err(|error| error.error)
-                .context("Cannot replace preferences")?;
+        let mode = if may_replace {
+            PublishMode::Replace
         } else {
-            temporary.persist_noclobber(&path).map_err(|error| {
-                if error.error.kind() == ErrorKind::AlreadyExists {
-                    anyhow::anyhow!(
-                        "Preferences at {} were not overwritten. Move the file aside before retrying.",
-                        path.display()
-                    )
-                } else {
-                    anyhow::Error::new(error.error).context("Cannot create preferences without overwriting an existing file")
-                }
-            })?;
-        }
-        Ok(())
+            PublishMode::CreateOnly
+        };
+        publish_bytes(&path, &contents, ".settings-", mode).map_err(|failure| match failure {
+            PublishError::MissingParent => {
+                anyhow::anyhow!("Preferences file has no parent directory")
+            }
+            PublishError::CreateDirectory(error) => {
+                anyhow::Error::new(error).context("Cannot create preferences directory")
+            }
+            PublishError::CreateTemporary(error) => {
+                anyhow::Error::new(error).context("Cannot create temporary preferences file")
+            }
+            PublishError::Write(error) => {
+                anyhow::Error::new(error).context("Cannot write preferences")
+            }
+            PublishError::Flush(error) => {
+                anyhow::Error::new(error).context("Cannot flush preferences")
+            }
+            PublishError::Publish(error) if may_replace => {
+                anyhow::Error::new(error).context("Cannot replace preferences")
+            }
+            PublishError::Publish(error) if error.kind() == ErrorKind::AlreadyExists => {
+                anyhow::anyhow!(
+                    "Preferences at {} were not overwritten. Move the file aside before retrying.",
+                    path.display()
+                )
+            }
+            PublishError::Publish(error) => anyhow::Error::new(error)
+                .context("Cannot create preferences without overwriting an existing file"),
+        })
     }
 }
 

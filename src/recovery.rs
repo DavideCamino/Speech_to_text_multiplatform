@@ -1,11 +1,11 @@
 //! Explicit save-on-close recovery. No audio, credentials, or running jobs.
-use crate::transcript::Transcript;
+use crate::{
+    storage::{PublishError, PublishMode, publish_bytes},
+    transcript::Transcript,
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{
-    io::{Read, Write},
-    path::Path,
-};
+use std::{io::Read, path::Path};
 
 const VERSION: u32 = 1;
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -77,39 +77,23 @@ fn write_snapshot(path: &Path, snapshot: &Snapshot, replace: bool) -> Result<()>
         bytes.len() as u64 <= MAX_BYTES,
         "Recovery data exceeds the 64 MiB limit"
     );
-    let directory = path
-        .parent()
-        .context("Recovery file has no parent directory")?;
-    std::fs::create_dir_all(directory).context("Cannot create recovery directory")?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".recovery-")
-        .suffix(".tmp")
-        .tempfile_in(directory)?;
-    temporary
-        .write_all(&bytes)
-        .context("Cannot write recovery file")?;
-    temporary
-        .as_file()
-        .sync_all()
-        .context("Cannot flush recovery file")?;
-    if replace {
-        temporary
-            .persist(path)
-            .map_err(|error| error.error)
-            .context("Cannot replace recovery file")?;
+    let mode = if replace {
+        PublishMode::Replace
     } else {
-        temporary.persist_noclobber(path).map_err(|error| {
-            if error.error.kind() == std::io::ErrorKind::AlreadyExists {
-                anyhow::anyhow!(
-                    "A recovery file already exists at {} and was not overwritten. Move it aside before retrying.",
-                    path.display()
-                )
-            } else {
-                anyhow::Error::new(error.error).context("Cannot publish recovery file")
-            }
-        })?;
-    }
-    Ok(())
+        PublishMode::CreateOnly
+    };
+    publish_bytes(path, &bytes, ".recovery-", mode).map_err(|failure| match failure {
+        PublishError::MissingParent => anyhow::anyhow!("Recovery file has no parent directory"),
+        PublishError::CreateDirectory(error) => anyhow::Error::new(error).context("Cannot create recovery directory"),
+        PublishError::CreateTemporary(error) => error.into(),
+        PublishError::Write(error) => anyhow::Error::new(error).context("Cannot write recovery file"),
+        PublishError::Flush(error) => anyhow::Error::new(error).context("Cannot flush recovery file"),
+        PublishError::Publish(error) if replace => anyhow::Error::new(error).context("Cannot replace recovery file"),
+        PublishError::Publish(error) if error.kind() == std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(
+            "A recovery file already exists at {} and was not overwritten. Move it aside before retrying.", path.display()
+        ),
+        PublishError::Publish(error) => anyhow::Error::new(error).context("Cannot publish recovery file"),
+    })
 }
 
 /// Preserve unreadable recovery files before offering the primary path to a new session.
