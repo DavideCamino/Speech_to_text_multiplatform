@@ -2,7 +2,9 @@
 mod client;
 mod stream;
 mod worker;
-pub use worker::{Event, Job, start, start_configured, start_loading};
+#[allow(deprecated)]
+pub use worker::start;
+pub use worker::{Event, Job, start_configured, start_loading};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Model {

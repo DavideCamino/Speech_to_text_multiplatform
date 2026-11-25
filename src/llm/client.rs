@@ -200,7 +200,8 @@ impl Client {
         Ok(())
     }
 
-    pub async fn model(&self) -> Result<String> {
+    /// Compatibility lookup for the deprecated implicit-model worker.
+    pub async fn legacy_first_model(&self) -> Result<String> {
         let mut response = self
             .response(self.request(reqwest::Method::GET, "v1/models"))
             .await?;

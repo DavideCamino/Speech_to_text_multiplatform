@@ -51,18 +51,47 @@ fn finish(job: &llm::Job) -> Result<String, String> {
         }
     }
 }
-fn models(listener: &TcpListener) {
+fn models(listener: &TcpListener, endpoint: &str) {
     let (mut socket, _) = listener.accept().unwrap();
     let (headers, _) = request(&mut socket);
-    assert!(headers.starts_with("GET /v1/models "));
+    assert!(headers.starts_with(&format!("GET {endpoint} ")));
     response(&mut socket, "200 OK", r#"{"data":[{"id":"local-model"}]}"#);
 }
 
+fn rewrite_with_local_model(connection: Connection, prompt: &str, text: &str) -> llm::Job {
+    llm::start_configured(
+        connection,
+        String::new(),
+        Some((prompt.into(), text.into())),
+        llm::Options {
+            model: Some("local-model".into()),
+            ..Default::default()
+        },
+    )
+}
+
+fn first_text(job: &llm::Job) -> String {
+    loop {
+        match job.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Event::Status(_) => continue,
+            Event::Text(text) => return text,
+            event => panic!(
+                "Expected text before completion, got {}",
+                match event {
+                    Event::Finished(_) => "Finished",
+                    _ => "an unexpected event",
+                }
+            ),
+        }
+    }
+}
+
 #[test]
-fn connection_test_authentication_and_discovery() {
+fn configured_discovery_sends_authentication() {
     let (connection, server) = server(|listener| {
         let (mut socket, _) = listener.accept().unwrap();
         let (headers, _) = request(&mut socket);
+        assert!(headers.starts_with("GET /models "));
         assert!(
             headers
                 .to_lowercase()
@@ -70,8 +99,13 @@ fn connection_test_authentication_and_discovery() {
         );
         response(&mut socket, "200 OK", r#"{"data":[{"id":"local-model"}]}"#);
     });
-    let job = llm::start(connection, "test-secret".into(), None);
-    assert!(finish(&job).unwrap().contains("local-model"));
+    let job = llm::start_configured(connection, "test-secret".into(), None, Default::default());
+    let Event::Models(models) = job.events.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("Expected model list");
+    };
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "local-model");
+    assert!(finish(&job).is_ok());
     server.join().unwrap();
 }
 
@@ -79,7 +113,7 @@ fn connection_test_authentication_and_discovery() {
 fn response_is_delivered_before_generation_finishes() {
     let (release, wait) = mpsc::channel();
     let (connection, server) = server(move |listener| {
-        models(&listener);
+        models(&listener, "/models");
         let (mut socket, _) = listener.accept().unwrap();
         let (headers, body) = request(&mut socket);
         assert!(headers.starts_with("POST /v1/chat/completions "));
@@ -106,14 +140,8 @@ fn response_is_delivered_before_generation_finishes() {
             )
             .unwrap();
     });
-    let job = llm::start(
-        connection,
-        String::new(),
-        Some(("Rewrite instructions".into(), "Original text".into())),
-    );
-    let Event::Text(first) = job.events.recv_timeout(Duration::from_secs(5)).unwrap() else {
-        panic!("Expected text before completion");
-    };
+    let job = rewrite_with_local_model(connection, "Rewrite instructions", "Original text");
+    let first = first_text(&job);
     assert_eq!(first, "# Héllo");
     release.send(()).unwrap();
     let mut text = first;
@@ -133,21 +161,21 @@ fn response_is_delivered_before_generation_finishes() {
 
 #[test]
 fn cancellation_interrupts_a_stalled_generation() {
-    let (ready, received) = mpsc::channel();
     let (release, wait) = mpsc::channel();
     let (connection, server) = server(move |listener| {
-        models(&listener);
+        models(&listener, "/models");
         let (mut socket, _) = listener.accept().unwrap();
-        request(&mut socket);
-        ready.send(()).unwrap();
+        assert!(
+            request(&mut socket)
+                .0
+                .starts_with("POST /v1/chat/completions ")
+        );
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n").unwrap();
+        socket.flush().unwrap();
         wait.recv_timeout(Duration::from_secs(5)).unwrap();
     });
-    let job = llm::start(
-        connection,
-        String::new(),
-        Some(("Instructions".into(), "Text".into())),
-    );
-    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    let job = rewrite_with_local_model(connection, "Instructions", "Text");
+    assert_eq!(first_text(&job), "partial");
     job.cancel.store(true, Ordering::Relaxed);
     assert!(finish(&job).unwrap_err().contains("Cancelled"));
     release.send(()).unwrap();
@@ -155,23 +183,39 @@ fn cancellation_interrupts_a_stalled_generation() {
 }
 
 #[test]
-fn auth_failures_redirects_and_empty_model_lists() {
+fn discovery_rejects_auth_failures_redirects_and_invalid_json() {
     for (status, body, expected) in [
         ("401 Unauthorized", "private request contents", "401"),
         ("302 Found", "", "302"),
-        ("200 OK", "{\"data\":[]}", "no loaded model"),
         ("200 OK", "invalid json", "Invalid model list"),
     ] {
         let (connection, server) = server(move |listener| {
             let (mut socket, _) = listener.accept().unwrap();
-            request(&mut socket);
+            assert!(request(&mut socket).0.starts_with("GET /models "));
             response(&mut socket, status, body);
         });
-        let error = finish(&llm::start(connection, "secret".into(), None)).unwrap_err();
+        let job = llm::start_configured(connection, "secret".into(), None, Default::default());
+        let error = finish(&job).unwrap_err();
         assert!(error.contains(expected), "{error}");
         assert!(!error.contains("private request contents"));
         server.join().unwrap();
     }
+}
+
+#[test]
+fn discovery_accepts_an_empty_model_list() {
+    let (connection, server) = server(|listener| {
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(request(&mut socket).0.starts_with("GET /models "));
+        response(&mut socket, "200 OK", r#"{"data":[]}"#);
+    });
+    let job = llm::start_configured(connection, String::new(), None, Default::default());
+    let Event::Models(models) = job.events.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("Expected an empty model list");
+    };
+    assert!(models.is_empty());
+    assert!(finish(&job).is_ok());
+    server.join().unwrap();
 }
 
 #[test]
@@ -181,19 +225,16 @@ fn malformed_and_truncated_streams_fail() {
         "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
     ] {
         let (connection, server) = server(move |listener| {
-            models(&listener);
+            models(&listener, "/models");
             let (mut socket, _) = listener.accept().unwrap();
-            request(&mut socket);
+            assert!(
+                request(&mut socket)
+                    .0
+                    .starts_with("POST /v1/chat/completions ")
+            );
             response(&mut socket, "200 OK", body);
         });
-        assert!(
-            finish(&llm::start(
-                connection,
-                String::new(),
-                Some(("prompt".into(), "text".into()))
-            ))
-            .is_err()
-        );
+        assert!(finish(&rewrite_with_local_model(connection, "prompt", "text")).is_err());
         server.join().unwrap();
     }
 }
@@ -291,9 +332,13 @@ fn configured_discovery_falls_back_for_single_model_servers() {
         let (mut socket, _) = listener.accept().unwrap();
         assert!(request(&mut socket).0.starts_with("GET /models "));
         response(&mut socket, "404 Not Found", "");
-        models(&listener);
+        models(&listener, "/v1/models");
     });
     let job = llm::start_configured(connection, String::new(), None, Default::default());
+    let Event::Models(models) = job.events.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("Expected models from the fallback endpoint");
+    };
+    assert_eq!(models[0].id, "local-model");
     assert!(finish(&job).is_ok());
     server.join().unwrap();
 }
@@ -404,5 +449,53 @@ fn unavailable_server_returns_an_error() {
         ..Default::default()
     };
     drop(listener);
-    assert!(finish(&llm::start(connection, String::new(), None)).is_err());
+    let job = llm::start_configured(connection, String::new(), None, Default::default());
+    assert!(finish(&job).is_err());
+}
+
+#[test]
+#[allow(deprecated)]
+fn legacy_start_reports_the_first_model_without_generating() {
+    let (connection, server) = server(|listener| models(&listener, "/v1/models"));
+    let job = llm::start(connection, String::new(), None);
+    assert_eq!(
+        finish(&job).unwrap(),
+        "Connected. Loaded model: local-model"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+#[allow(deprecated)]
+fn legacy_start_generates_with_the_first_model() {
+    let (connection, server) = server(|listener| {
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(request(&mut socket).0.starts_with("GET /v1/models "));
+        response(
+            &mut socket,
+            "200 OK",
+            r#"{"data":[{"id":"first"},{"id":"second"}]}"#,
+        );
+        let (mut socket, _) = listener.accept().unwrap();
+        let (headers, body) = request(&mut socket);
+        assert!(headers.starts_with("POST /v1/chat/completions "));
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["model"], "first");
+        response(
+            &mut socket,
+            "200 OK",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Result\"}}]}\n\ndata: [DONE]\n\n",
+        );
+    });
+    let job = llm::start(
+        connection,
+        String::new(),
+        Some(("prompt".into(), "text".into())),
+    );
+    let Event::Text(text) = job.events.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("Expected legacy generation to emit text without a status event");
+    };
+    assert_eq!(text, "Result");
+    assert_eq!(finish(&job).unwrap(), "Rewrite complete.");
+    server.join().unwrap();
 }
