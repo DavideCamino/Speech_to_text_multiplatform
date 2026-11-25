@@ -4,7 +4,9 @@ Speech2Text is a local-first desktop application for turning audio files and mic
 
 The interface is built with GTK 4 and libadwaita. Linux and Windows packages support CPU and Vulkan inference; models are downloaded separately. Project code is [MIT-licensed](LICENSE); dependencies retain their [own licenses](LICENSES.txt).
 
-Software debeloped by **Davide Camino**.
+Developed by **Davide Camino**.
+
+This README describes the current development branch. The latest published release, [`v1.0.0`](https://github.com/DavideCamino/Speech_to_text_multiplatform/releases/tag/v1.0.0), predates features described here, including the batch queue, save-on-close recovery, and the current LLM model-selection workflow. See the [changelog](Changelog.md#unreleased) for unreleased changes.
 
 ## Features
 
@@ -23,9 +25,9 @@ Software debeloped by **Davide Camino**.
 
 Open **⋮ → Settings → Speech to Text → Local Whisper model**. Choose **Download…** for a catalog model, or **Select Local Model…** to use an existing whisper.cpp `.bin` model. External models can be used in place or copied into the application's model folder. Tiny is a useful starting point for live recognition; larger models need more memory and processing time.
 
-Choose the spoken language, **Auto**, or **Custom…** for another supported Whisper language code. Enable hardware acceleration if your build and GPU support it, or disable it for CPU inference. **Automatic** uses Whisper's default GPU selection.
+Choose the spoken language, **Auto**, or **Custom…** for another supported Whisper language code. Enable hardware acceleration if your build and GPU support it, or disable it for CPU inference. **Automatic** uses Whisper's default GPU selection. Click **Apply** to save your recognition settings and close Settings.
 
-![Model and recognition settings](Screenshots/settings_whisper.png)
+![Placeholder for model and recognition settings](Screenshots/placeholder.png)
 
 ### 2. Transcribe a file or microphone
 
@@ -43,7 +45,7 @@ Grey text is provisional and may change. **Stop** ends microphone capture and fi
 
 When a transcript already exists, choose **Replace** to start over or **Append** to preserve it and add the new recognition.
 
-![Transcription view](Screenshots/transcription.png)
+![Placeholder for the transcription view](Screenshots/placeholder.png)
 
 ### 3. Edit and export
 
@@ -51,11 +53,11 @@ The main transcript is editable whenever transcription is stopped. **Copy**, **S
 
 **Save Subtitles** exports the original recognized text and timestamps as SRT—not your manual text edits. Appending preserves edited text, while subtitle timings continue from the original subtitle timeline.
 
-Export anything you want to keep permanently. When closing with unexported text or active work, choose **Cancel**, **Close Without Saving**, or **Autosave & Close**. Autosave & Close writes a temporary recovery snapshot in the app's data folder, then exits. On the next launch, the transcript (including manual edits and original subtitle timings), rewrite source/instructions, and partial rewrite result are restored; unexported content remains marked unsaved. The recovery file is deleted only after successful restoration. Recording and generation never resume automatically.
+Export anything you want to keep permanently. When closing with unexported, non-whitespace transcript or rewrite text, choose **Cancel**, **Close Without Saving**, or **Autosave & Close**. If work is active but there is no text to save, the app still asks for confirmation but does not offer autosave. **Autosave & Close** writes a temporary recovery snapshot in the app's data folder, then exits. On the next launch, the transcript (including manual edits and original subtitle timings), rewrite source/instructions, and partial rewrite result are restored; unexported content remains marked unsaved. The recovery file is deleted only after successful restoration. Recording and generation never resume automatically.
 
 If autosaving fails, the app stays open and offers retry or closing without saving. If the final preferences save fails, you can retry, return to the editor, or exit without updating preferences. Exiting this way keeps any recovery snapshot already saved. On startup, unreadable recovery files are moved into a unique `recovery-unreadable-*` backup folder in the app's data directory, and the app shows the backup path. If it cannot move the file, a new autosave will not overwrite it. This is explicit save-on-close recovery, **not periodic autosaving or crash recovery**. Ctrl + mouse wheel changes text size without changing exported content; zoom lasts for the current session.
 
-![Transcript editing and export](Screenshots/editing.gif)
+![Placeholder for transcript editing and export](Screenshots/placeholder.png)
 
 ### 4. Rewrite with an LLM (optional)
 
@@ -68,7 +70,8 @@ llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
 For a server offering multiple models without automatic loading, you can instead run:
 
 ```sh
-llama serve --no-models-autoload -ngl 20 --models-dir ~/Documents/dev/AI
+llama-server --models-dir /path/to/models --no-models-autoload \
+  --host 127.0.0.1 --port 8080
 ```
 
 In **Settings → LLM**, enter the hostname/IP and the port printed by your server, optionally supply an authentication token, and select **Refresh Models**. This checks the connection and lists the models the server offers. A single model is selected automatically; if several are available, choose one unless your previous selection is still offered. An empty list or connection error is shown in Settings. Choose a **Reasoning level**, then click **Apply**. Settings closes and the selected model loads in the background. Wait for **Model ready** before clicking Rewrite. Model discovery does not load models, and Rewrite no longer initiates model loading. The app does not launch the server, unload other models, or change its GPU-layer settings.
@@ -77,19 +80,19 @@ Reasoning choices are **Server default**, **Off**, **Low**, **Medium**, and **Hi
 
 Enter a hostname, not a full URL. HTTPS requires a server or reverse proxy with a trusted certificate.
 
-![LLM settings view](Screenshots/settings_llm.png)
+![Placeholder for LLM settings](Screenshots/placeholder.png)
 
 Open **Rewrite**, expand **System Prompt (required)**, enter your instructions, and start generation. The current transcript is sent as the original text. **Stop Generation** keeps partial output. **Copy Markdown** and Markdown export preserve the raw response; TXT export removes Markdown formatting.
 
 The renderer supports headings, emphasis, lists, quotations, and code. Links are inert; images show alt text. No generated content automatically opens files or fetches images.
 
-![LLM rewrite view](Screenshots/rewriting.png)
+![Placeholder for the LLM rewrite view](Screenshots/placeholder.png)
 
 ### Privacy and saved data
 
 - Whisper recognition runs locally. Audio is processed in memory, not saved by the app.
 - Explicit model downloads contact Hugging Face and its download servers.
-- LLM tests and rewrites contact the configured server; rewriting sends instructions and transcript text, **not audio**. Use loopback for a local HTTP server or HTTPS on untrusted networks.
+- **Refresh Models**, **Apply** in LLM Settings, and generating a rewrite contact the configured server. Only generating a rewrite sends instructions and transcript text; none of these actions sends audio. Use loopback for a local HTTP server or HTTPS on untrusted networks.
 - Authentication tokens are session-only. Recognition context, rewrite instructions, and other preferences are saved locally as **unencrypted JSON**; do not put secrets in saved prompts.
 - **Autosave & Close** explicitly stores transcript text, original subtitles, rewrite source/instructions/output, and recognition context as **unencrypted JSON** in `recovery.json` in the app's data folder. Audio and authentication tokens are not included. Recovery files are limited to 64 MiB.
 - Exports are written only to the location you select. See [installation and data locations](INSTALL.md#saved-data) for settings, models, and the recovery file.

@@ -2,7 +2,7 @@
 
 [Application overview and usage](README.md) · [Build and package from source](BUILD_FROM_SOURCE.md)
 
-Use packages from the project's [GitHub Releases](https://github.com/DavideCamino/Speech_to_text_multiplatform/releases). If a release has no package for your platform, follow the source-build guide; the presence of packaging scripts does not mean a published binary is available.
+Use packages from the project's [GitHub Releases](https://github.com/DavideCamino/Speech_to_text_multiplatform/releases). If a release has no package for your platform, follow the source-build guide; the presence of packaging scripts does not mean a published binary is available. The usage and saved-data sections describe the development branch. The published `v1.0.0` packages do not include the batch queue, save-on-close recovery, or the current LLM model-selection workflow.
 
 The packaged targets are **Linux x86_64** and **Windows 10/11 x86_64**, with CPU and Vulkan support. Vulkan needs a compatible GPU and current vendor drivers; CPU mode remains available. Models are not included. You do not need Rust, Python, a Vulkan SDK, or a separate GTK installation to use the Windows package; Flatpak obtains its runtime separately.
 
@@ -101,7 +101,7 @@ Choosing **Autosave & Close** stores `recovery.json` in the data folder (alongsi
 - Linux native build: `~/.local/share/speech2text/recovery.json`
 - Windows: `%APPDATA%\Speech2Text\data\recovery.json`
 
-This temporary file contains unencrypted transcript/rewrite text, prompts, original subtitles, and unsaved-state information—not audio or authentication tokens. The next launch restores it and deletes it after successful restoration. Failed recovery leaves the file intact. This is not periodic autosaving or crash recovery.
+This temporary file contains unencrypted transcript/rewrite text, prompts, original subtitles, and unsaved-state information—not audio or authentication tokens. The next launch deletes it after successful restoration. If the file is unreadable, the app tries to move it into a unique `recovery-unreadable-*` backup directory beside `recovery.json` and shows the backup path. If it cannot move the file, it leaves the original in place and will not overwrite it with a new autosave. This is not periodic autosaving or crash recovery.
 
 Older Windows builds used `%APPDATA%\Davide Camino\Speech2Text\`. There is no automatic migration: with the app closed, copy the old `config` and `data` folders into `%APPDATA%\Speech2Text\` if needed, backing up any existing files first. Reselect the model afterward if its saved path points to the old folder.
 
