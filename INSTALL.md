@@ -10,9 +10,9 @@ Checksums detect corruption, not publisher identity independently of the downloa
 
 ## Linux: Flatpak
 
-### Install
+### One-time Flatpak setup
 
-Install Flatpak using your distribution's package manager. For example:
+If this is your first time using Flatpak, install it with your distribution's package manager. For example:
 
 ```sh
 # Ubuntu / Debian
@@ -22,17 +22,40 @@ sudo apt install flatpak
 sudo pacman -S flatpak
 ```
 
-Add Flathub for the required runtime, then download `Speech2Text-x86_64.flatpak` and `SHA256SUMS` from the same release. Run the following from the download directory:
+Add Flathub for the required runtime if it is not already configured for your user:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub \
   https://flathub.org/repo/flathub.flatpakrepo
+```
+
+### Download and verify the bundle
+
+Download `Speech2Text-x86_64.flatpak` and `SHA256SUMS` from the same release. In the download directory, verify the bundle before installing:
+
+```sh
 sha256sum --check SHA256SUMS
+```
+
+### Install Speech2Text
+
+**This is the only command that installs Speech2Text.** Run it from the folder containing the downloaded bundle:
+
+```sh
 flatpak install --user ./Speech2Text-x86_64.flatpak
+```
+
+Accept installation of the required runtime if prompted.
+
+### Launch Speech2Text
+
+Open **Speech2Text** from your desktop application launcher, or run:
+
+```sh
 flatpak run io.github.davidecamino.Speech2Text
 ```
 
-Accept installation of the required runtime. After installation, Speech2Text should also appear in your desktop application launcher; log out and back in if this is your first Flatpak setup and it does not appear.
+If this is your first Flatpak setup and Speech2Text does not appear in the launcher, log out and back in.
 
 This is a **sideloaded bundle**, not a Flathub application. The sandbox uses desktop file portals, PulseAudio access for microphones, and GPU access. It does not request unrestricted access to your home directory. Keep your desktop portal services and graphics drivers working and up to date; NVIDIA also uses Vulkan in this package, not CUDA.
 
