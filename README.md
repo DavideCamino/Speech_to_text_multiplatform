@@ -1,5 +1,7 @@
 # Speech2Text
 
+![Show sw](Screenshots/show.png)
+
 Speech2Text is a local-first desktop application for turning audio files and microphone recordings into text. It uses Whisper for on-device recognition and offers optional transcript rewriting through a separately configured llama.cpp server.
 
 The interface is built with GTK 4 and libadwaita. Linux and Windows packages support CPU and Vulkan inference; models are downloaded separately. Project code is [MIT-licensed](LICENSE); dependencies retain their [own licenses](LICENSES.txt).
@@ -7,7 +9,6 @@ The interface is built with GTK 4 and libadwaita. Linux and Windows packages sup
 Developed by **Davide Camino**.
 
 This README describes the current development branch. The latest published release, [`v1.0.0`](https://github.com/DavideCamino/Speech_to_text_multiplatform/releases/tag/v1.0.0), predates features described here, including the batch queue, save-on-close recovery, and the current LLM model-selection workflow. See the [changelog](Changelog.md#unreleased) for unreleased changes.
-
 ## Features
 
 - **Audio files:** queue one or more WAV, MP3, FLAC, OGG/Vorbis, or M4A (AAC/ALAC) files, reorder them with drag-and-drop or buttons, and transcribe sequentially with current-file progress and total time remaining.
